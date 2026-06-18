@@ -9,6 +9,8 @@ pub enum SupperError {
         path: PathBuf,
         source: toml::de::Error,
     },
+    #[error("TOML serialize error: {0}")]
+    TomlSerialize(#[from] toml::ser::Error),
     #[error("invalid config in {path}: {message}")]
     InvalidConfig { path: PathBuf, message: String },
     #[error("duplicate service name: {0}")]

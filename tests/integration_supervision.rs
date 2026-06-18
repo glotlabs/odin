@@ -80,6 +80,52 @@ command = "/bin/sh"
 }
 
 #[test]
+fn add_service_file_derives_config_from_name() {
+    let dir = temp_dir("add");
+    let added = config::add_service_file(&dir, "my-app").expect("add service");
+
+    assert_eq!(added.path, dir.join("my-app.toml"));
+    assert_eq!(added.service.name, "my-app");
+    assert_eq!(
+        added.service.command,
+        PathBuf::from("/usr/local/bin/my-app")
+    );
+    assert_eq!(added.service.cwd, Some(PathBuf::from("/usr/local/my-app")));
+    assert_eq!(
+        added.service.stdout_log,
+        Some(PathBuf::from("/var/log/supper/my-app.out.log"))
+    );
+    assert_eq!(
+        added.service.stderr_log,
+        Some(PathBuf::from("/var/log/supper/my-app.err.log"))
+    );
+    assert!(added.service.autostart);
+    assert_eq!(added.service.restart, RestartPolicy::Always);
+    assert!(added.service.user.is_none());
+    assert!(added.service.group.is_none());
+
+    let loaded = config::load_service(&added.path).expect("generated TOML must load");
+    assert_eq!(loaded, added.service);
+}
+
+#[test]
+fn add_service_file_refuses_overwrite() {
+    let dir = temp_dir("add-overwrite");
+    config::add_service_file(&dir, "my-app").expect("first add");
+
+    let err = config::add_service_file(&dir, "my-app").expect_err("overwrite must fail");
+    assert!(err.to_string().contains("File exists") || err.to_string().contains("exists"));
+}
+
+#[test]
+fn add_service_file_rejects_unsafe_name() {
+    let dir = temp_dir("add-unsafe");
+
+    let err = config::add_service_file(&dir, "../bad").expect_err("unsafe name must fail");
+    assert!(err.to_string().contains("must not contain"));
+}
+
+#[test]
 fn validate_config_dir_reports_valid_services_and_warnings() {
     let dir = temp_dir("validate");
     let log_dir = dir.join("missing-log-dir");

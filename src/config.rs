@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -130,6 +131,12 @@ pub struct ValidationIssue {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddedService {
+    pub path: PathBuf,
+    pub service: ServiceConfig,
+}
+
 pub fn load_services(config_dir: &Path) -> Result<Vec<ServiceConfig>> {
     let mut services = Vec::new();
     for entry in fs::read_dir(config_dir)? {
@@ -169,6 +176,48 @@ pub fn load_service(path: &Path) -> Result<ServiceConfig> {
     Ok(service)
 }
 
+pub fn add_service_file(config_dir: &Path, name: &str) -> Result<AddedService> {
+    validate_service_name(name)?;
+    fs::create_dir_all(config_dir)?;
+    let path = config_dir.join(format!("{name}.toml"));
+    let service = derive_service_config(name);
+    validate_service(&path, &service)?;
+
+    let encoded = toml::to_string_pretty(&service)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    std::io::Write::write_all(&mut file, encoded.as_bytes())?;
+
+    let loaded = load_service(&path)?;
+    Ok(AddedService {
+        path,
+        service: loaded,
+    })
+}
+
+pub fn derive_service_config(name: &str) -> ServiceConfig {
+    ServiceConfig {
+        name: name.to_string(),
+        command: PathBuf::from(format!("/usr/local/bin/{name}")),
+        args: Vec::new(),
+        cwd: Some(PathBuf::from(format!("/usr/local/{name}"))),
+        autostart: true,
+        env: Default::default(),
+        user: None,
+        group: None,
+        umask: None,
+        restart: RestartPolicy::Always,
+        restart_initial_delay: default_initial_delay(),
+        restart_max_delay: default_max_delay(),
+        stop_timeout: default_stop_timeout(),
+        stdout_log: Some(PathBuf::from(format!("/var/log/supper/{name}.out.log"))),
+        stderr_log: Some(PathBuf::from(format!("/var/log/supper/{name}.err.log"))),
+        healthcheck: None,
+    }
+}
+
 fn validate_unique_names(services: &[ServiceConfig]) -> Result<()> {
     let mut names = HashSet::new();
     for service in services {
@@ -185,12 +234,7 @@ fn validate_service(path: &Path, service: &ServiceConfig) -> Result<()> {
         message: message.to_string(),
     };
 
-    if service.name.trim().is_empty() {
-        return Err(invalid("name must not be empty"));
-    }
-    if service.name.contains('/') || service.name.contains('\0') {
-        return Err(invalid("name must not contain '/' or NUL"));
-    }
+    validate_service_name(&service.name)?;
     if service.command.as_os_str().is_empty() {
         return Err(invalid("command must not be empty"));
     }
@@ -225,6 +269,28 @@ fn validate_service(path: &Path, service: &ServiceConfig) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn validate_service_name(name: &str) -> Result<()> {
+    if name.trim().is_empty() {
+        return Err(SupperError::InvalidConfig {
+            path: PathBuf::from("<service-name>"),
+            message: "name must not be empty".to_string(),
+        });
+    }
+    if name.contains('/') || name.contains('\0') {
+        return Err(SupperError::InvalidConfig {
+            path: PathBuf::from("<service-name>"),
+            message: "name must not contain '/' or NUL".to_string(),
+        });
+    }
+    if name == "." || name == ".." {
+        return Err(SupperError::InvalidConfig {
+            path: PathBuf::from("<service-name>"),
+            message: "name must not be '.' or '..'".to_string(),
+        });
+    }
     Ok(())
 }
 

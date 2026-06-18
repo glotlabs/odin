@@ -26,6 +26,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Monitor,
+    Add { name: String },
     Validate,
     List,
     Status { service: Option<String> },
@@ -40,6 +41,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Monitor) {
         Command::Monitor => monitor(cli.config_dir, cli.socket).await,
+        Command::Add { name } => add(cli.config_dir, &name, cli.json),
         Command::Validate => validate(cli.config_dir, cli.json),
         Command::List => print_status(&cli.socket, None, cli.json).await,
         Command::Status { service } => print_status(&cli.socket, service, cli.json).await,
@@ -53,6 +55,21 @@ async fn main() -> Result<()> {
             command_ok(&cli.socket, ControlRequest::Restart { service }).await
         }
     }
+}
+
+fn add(config_dir: PathBuf, name: &str, json: bool) -> Result<()> {
+    let added = config::add_service_file(&config_dir, name)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&added)
+                .map_err(|err| SupperError::Protocol(err.to_string()))?
+        );
+    } else {
+        println!("created {}", added.path.display());
+        println!("reload the monitor with SIGHUP to apply the new service");
+    }
+    Ok(())
 }
 
 fn validate(config_dir: PathBuf, json: bool) -> Result<()> {

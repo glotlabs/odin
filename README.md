@@ -25,6 +25,7 @@ Query and control services:
 supper status
 supper status my-app
 supper --json status
+supper add my-app
 supper validate
 supper --json validate
 supper start my-app
@@ -83,6 +84,19 @@ timeout, autostart, and health-check changes are live updates.
 parses TOML, checks duplicate names, validates user/group lookups, verifies
 absolute command paths exist, checks `cwd`, and reports log directories that
 will be created by the monitor.
+
+`supper add <name>` creates `<config-dir>/<name>.toml` and refuses to overwrite
+an existing file. Values are derived from the name:
+
+- `command = "/usr/local/bin/<name>"`
+- `cwd = "/usr/local/<name>"`
+- `stdout_log = "/var/log/supper/<name>.out.log"`
+- `stderr_log = "/var/log/supper/<name>.err.log"`
+- `autostart = true`
+- `restart = "always"`
+
+The generated file omits `user` and `group`; add them manually when the service
+should drop privileges to a dedicated account.
 
 Logs are appended directly to files. Log rotation is intentionally left to
 FreeBSD `newsyslog`; see `examples/newsyslog/supper.conf`.

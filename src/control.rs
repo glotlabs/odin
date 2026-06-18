@@ -155,6 +155,7 @@ fn error_code(err: &SupperError) -> &'static str {
         SupperError::InvalidConfig { .. } => "invalid-config",
         SupperError::DuplicateService(_) => "duplicate-service",
         SupperError::Toml { .. } => "toml",
+        SupperError::TomlSerialize(_) => "toml-serialize",
         SupperError::Io(_) => "io",
         SupperError::Nix(_) => "nix",
         SupperError::Http(_) => "http",
