@@ -12,7 +12,8 @@ use crate::config::{HealthAction, ServiceConfig};
 use crate::error::{Result, SupperError};
 use crate::service::ServiceRuntime;
 use crate::status::{
-    HealthStatus, RestartHistoryEntry, RestartReason, ServiceState, ServiceStatus,
+    HealthStatus, RestartHistoryEntry, RestartReason, ServiceEventKind, ServiceState,
+    ServiceStatus, now_unix_seconds,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -85,6 +86,7 @@ impl SupervisorHandle {
             }
             service.desired_running = true;
             service.state = ServiceState::Starting;
+            service.record_event(ServiceEventKind::Started, "start requested");
             service.config.clone()
         };
         self.spawn_and_track(config, None)
@@ -99,10 +101,15 @@ impl SupervisorHandle {
             service.desired_running = false;
             if service.pid.is_none() {
                 service.state = ServiceState::Stopped;
+                service.record_event(ServiceEventKind::Stopped, "service already stopped");
                 service.notify_stopped();
                 return Ok(());
             }
             service.state = ServiceState::Stopping;
+            service.record_event(
+                ServiceEventKind::StopRequested,
+                format!("stop requested for pid {}", service.pid.unwrap_or_default()),
+            );
             let (tx, rx) = oneshot::channel();
             service.stop_waiters.push(tx);
             (service.pid, service.config.stop_timeout, rx)
@@ -111,7 +118,16 @@ impl SupervisorHandle {
         let Some(pid) = pid else {
             return Ok(());
         };
-        terminate_process_group(pid, timeout, stopped).await;
+        let escalated = terminate_process_group(pid, timeout, stopped).await;
+        if escalated {
+            let mut services = self.services()?;
+            if let Some(service) = services.get_mut(name) {
+                service.record_event(
+                    ServiceEventKind::StopRequested,
+                    format!("stop escalated to SIGKILL for pid {pid}"),
+                );
+            }
+        }
         Ok(())
     }
 
@@ -202,9 +218,17 @@ impl SupervisorHandle {
                         service.desired_running = config.autostart || was_running;
                         service.reset_backoff();
                         if needs_restart {
+                            service.record_event(
+                                ServiceEventKind::ReloadRestartRequired,
+                                "reload changed process-affecting configuration",
+                            );
                             summary.restarted.push(name.clone());
                             restart_names.push(name.clone());
                         } else {
+                            service.record_event(
+                                ServiceEventKind::ReloadUpdated,
+                                "reload applied live configuration update",
+                            );
                             summary.live_updated.push(name.clone());
                             if needs_health_loop {
                                 health_loop_required.push((name.clone(), service.generation));
@@ -219,7 +243,9 @@ impl SupervisorHandle {
                     }
                     Some(_) => {}
                     None => {
-                        services.insert(name.clone(), ServiceRuntime::new(config.clone()));
+                        let mut runtime = ServiceRuntime::new(config.clone());
+                        runtime.record_event(ServiceEventKind::Added, "service added by reload");
+                        services.insert(name.clone(), runtime);
                         summary.added.push(name.clone());
                         if config.autostart {
                             start_required.push(name.clone());
@@ -238,6 +264,7 @@ impl SupervisorHandle {
                     continue;
                 };
                 service.desired_running = false;
+                service.record_event(ServiceEventKind::Removed, "service removed by reload");
                 summary.removed.push(name.clone());
                 if service.pid.is_some() {
                     removed_running.push(name);
@@ -312,6 +339,15 @@ impl SupervisorHandle {
                 entry.to_pid = pid;
                 service.restart_count += 1;
                 service.record_restart(entry);
+                service.record_event(
+                    ServiceEventKind::Restarted,
+                    format!("service restarted with pid {}", pid.unwrap_or_default()),
+                );
+            } else {
+                service.record_event(
+                    ServiceEventKind::Started,
+                    format!("service started with pid {}", pid.unwrap_or_default()),
+                );
             }
         }
 
@@ -361,15 +397,21 @@ impl SupervisorHandle {
             service.pid = None;
             service.started_at = None;
             service.last_exit = Some(message.clone());
+            service.record_event(ServiceEventKind::Exited, message.clone());
             service.notify_stopped();
             if !service.desired_running {
                 service.state = ServiceState::Stopped;
+                service.record_event(ServiceEventKind::Stopped, "service stopped");
                 return;
             }
             let should_restart = service.should_restart(successful);
             if should_restart {
                 service.state = ServiceState::BackingOff;
                 let delay = service.advance_backoff();
+                service.record_event(
+                    ServiceEventKind::RestartScheduled,
+                    format!("restart scheduled after {}ms", delay.as_millis()),
+                );
                 (true, delay, Some(service.config.clone()), message)
             } else {
                 service.state = if successful {
@@ -456,6 +498,12 @@ impl SupervisorHandle {
                 match result {
                     Ok(()) => {
                         service.health_failures = 0;
+                        if !matches!(service.health, HealthStatus::Healthy) {
+                            service.record_event(
+                                ServiceEventKind::HealthChanged,
+                                "health changed to healthy",
+                            );
+                        }
                         service.health = HealthStatus::Healthy;
                     }
                     Err(err) => {
@@ -464,12 +512,24 @@ impl SupervisorHandle {
                         if service.health_failures >= config.retries {
                             match config.action {
                                 HealthAction::Ignore => {
+                                    service.record_event(
+                                        ServiceEventKind::HealthChanged,
+                                        format!("health changed to unhealthy: {message}"),
+                                    );
                                     service.health = HealthStatus::Unhealthy(message);
                                 }
                                 HealthAction::MarkUnready => {
+                                    service.record_event(
+                                        ServiceEventKind::HealthChanged,
+                                        format!("health changed to unready: {message}"),
+                                    );
                                     service.health = HealthStatus::Unready(message);
                                 }
                                 HealthAction::Restart => {
+                                    service.record_event(
+                                        ServiceEventKind::HealthChanged,
+                                        format!("health changed to unhealthy: {message}"),
+                                    );
                                     service.health = HealthStatus::Unhealthy(message);
                                     restart = true;
                                 }
@@ -488,15 +548,21 @@ impl SupervisorHandle {
     }
 }
 
-async fn terminate_process_group(pid: u32, timeout: Duration, stopped: oneshot::Receiver<()>) {
+async fn terminate_process_group(
+    pid: u32,
+    timeout: Duration,
+    stopped: oneshot::Receiver<()>,
+) -> bool {
     let pgid = Pid::from_raw(pid as i32);
     let _ = killpg(pgid, Signal::SIGTERM);
     if time::timeout(timeout, stopped).await.is_ok() {
-        return;
+        return false;
     }
     if process_group_exists(pgid) {
         let _ = killpg(pgid, Signal::SIGKILL);
+        return true;
     }
+    false
 }
 
 fn process_group_exists(pgid: Pid) -> bool {
@@ -516,11 +582,4 @@ fn restart_required(old: &ServiceConfig, new: &ServiceConfig) -> bool {
         || old.umask != new.umask
         || old.stdout_log != new.stdout_log
         || old.stderr_log != new.stderr_log
-}
-
-fn now_unix_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }

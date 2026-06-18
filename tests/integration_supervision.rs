@@ -5,7 +5,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use supper::config::{self, HealthAction, HealthCheckConfig, HealthCheckKind, RestartPolicy};
 use supper::control::{ControlRequest, ControlResponse};
 use supper::service::ServiceRuntime;
-use supper::status::{MAX_RESTART_HISTORY, RestartHistoryEntry, RestartReason, ServiceState};
+use supper::status::{
+    MAX_EVENT_HISTORY, MAX_RESTART_HISTORY, RestartHistoryEntry, RestartReason, ServiceEventKind,
+    ServiceState,
+};
 use supper::supervisor::SupervisorHandle;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixStream};
@@ -189,6 +192,20 @@ fn restart_history_is_bounded() {
     assert_eq!(status.restart_history[0].at_unix_seconds, 10);
 }
 
+#[test]
+fn event_history_is_bounded() {
+    let service = config::derive_service_config("events");
+    let mut runtime = ServiceRuntime::new(service);
+
+    for index in 0..(MAX_EVENT_HISTORY + 10) {
+        runtime.record_event(ServiceEventKind::Started, format!("event {index}"));
+    }
+
+    let status = runtime.status();
+    assert_eq!(status.event_history.len(), MAX_EVENT_HISTORY);
+    assert_eq!(status.event_history[0].message, "event 10");
+}
+
 #[tokio::test]
 async fn status_returns_configured_service_state() {
     let dir = temp_dir("status");
@@ -234,8 +251,31 @@ restart = "never"
     assert_eq!(statuses[0].state, ServiceState::Running);
     assert!(statuses[0].pid.is_some());
     assert_eq!(statuses[0].restart_count, 0);
+    assert!(
+        statuses[0]
+            .event_history
+            .iter()
+            .any(|event| event.kind == ServiceEventKind::Started)
+    );
 
     supervisor.stop("sleeper").await.expect("stop");
+    let stopped = supervisor
+        .status(Some("sleeper"))
+        .await
+        .expect("status after stop")
+        .remove(0);
+    assert!(
+        stopped
+            .event_history
+            .iter()
+            .any(|event| event.kind == ServiceEventKind::StopRequested)
+    );
+    assert!(
+        stopped
+            .event_history
+            .iter()
+            .any(|event| event.kind == ServiceEventKind::Stopped)
+    );
 }
 
 #[tokio::test]
@@ -301,6 +341,12 @@ restart_max_delay = "100ms"
     assert!(entry.exit.as_deref().unwrap_or("").contains("1"));
     assert_eq!(entry.backoff_millis, Some(50));
     assert!(entry.to_pid.is_some());
+    assert!(
+        statuses[0]
+            .event_history
+            .iter()
+            .any(|event| event.kind == ServiceEventKind::RestartScheduled)
+    );
 }
 
 #[tokio::test]
@@ -402,6 +448,17 @@ stop_timeout = "100ms"
     assert_eq!(summary.live_updated, vec!["live"]);
     assert!(summary.restarted.is_empty());
     assert_eq!(before, after);
+    let status = supervisor
+        .status(Some("live"))
+        .await
+        .expect("status after reload")
+        .remove(0);
+    assert!(
+        status
+            .event_history
+            .iter()
+            .any(|event| event.kind == ServiceEventKind::ReloadUpdated)
+    );
 
     supervisor.stop("live").await.expect("stop");
 }
@@ -452,6 +509,17 @@ stop_timeout = "100ms"
     assert_eq!(summary.restarted, vec!["worker"]);
     assert!(summary.live_updated.is_empty());
     assert_ne!(before, after);
+    let status = supervisor
+        .status(Some("worker"))
+        .await
+        .expect("status after reload restart")
+        .remove(0);
+    assert!(
+        status
+            .event_history
+            .iter()
+            .any(|event| event.kind == ServiceEventKind::ReloadRestartRequired)
+    );
 
     supervisor.stop("worker").await.expect("stop");
 }

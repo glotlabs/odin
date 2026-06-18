@@ -25,6 +25,8 @@ Query and control services:
 supper status
 supper status my-app
 supper --json status
+supper events my-app
+supper --json events my-app
 supper add my-app
 supper validate
 supper --json validate
@@ -37,6 +39,12 @@ supper restart my-app
 `supper --json status` includes bounded restart history for each service. The
 history keeps the last 64 restart records with timestamp, reason, previous PID,
 new PID, exit text when available, and backoff delay in milliseconds.
+
+`supper --json status` also includes bounded event history for each service. The
+event history keeps the last 128 lifecycle records, including starts, exits,
+stops, scheduled restarts, reload updates, reload-required restarts, removals,
+and health state changes. Use `supper events <service>` for a compact human
+view of one service's event history.
 
 ## Service Config
 

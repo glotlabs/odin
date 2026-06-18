@@ -5,7 +5,8 @@ use tokio::sync::oneshot;
 
 use crate::config::{RestartPolicy, ServiceConfig};
 use crate::status::{
-    HealthStatus, MAX_RESTART_HISTORY, RestartHistoryEntry, ServiceState, ServiceStatus,
+    HealthStatus, MAX_EVENT_HISTORY, MAX_RESTART_HISTORY, RestartHistoryEntry, ServiceEvent,
+    ServiceEventKind, ServiceState, ServiceStatus,
 };
 
 pub struct ServiceRuntime {
@@ -22,6 +23,7 @@ pub struct ServiceRuntime {
     pub health_failures: u32,
     pub stop_waiters: Vec<oneshot::Sender<()>>,
     pub restart_history: VecDeque<RestartHistoryEntry>,
+    pub event_history: VecDeque<ServiceEvent>,
 }
 
 impl ServiceRuntime {
@@ -42,6 +44,7 @@ impl ServiceRuntime {
             health_failures: 0,
             stop_waiters: Vec::new(),
             restart_history: VecDeque::new(),
+            event_history: VecDeque::new(),
         }
     }
 
@@ -55,6 +58,7 @@ impl ServiceRuntime {
             last_exit: self.last_exit.clone(),
             health: self.health.clone(),
             restart_history: self.restart_history.iter().cloned().collect(),
+            event_history: self.event_history.iter().cloned().collect(),
         }
     }
 
@@ -91,5 +95,16 @@ impl ServiceRuntime {
             self.restart_history.pop_front();
         }
         self.restart_history.push_back(entry);
+    }
+
+    pub fn record_event(&mut self, kind: ServiceEventKind, message: impl Into<String>) {
+        if self.event_history.len() == MAX_EVENT_HISTORY {
+            self.event_history.pop_front();
+        }
+        self.event_history.push_back(ServiceEvent {
+            at_unix_seconds: crate::status::now_unix_seconds(),
+            kind,
+            message: message.into(),
+        });
     }
 }

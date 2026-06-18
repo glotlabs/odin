@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use supper::config;
 use supper::control::{self, ControlRequest, ControlResponse};
+use supper::status::ServiceEvent;
 use supper::supervisor::SupervisorHandle;
 use supper::{Result, SupperError};
 use tokio::signal::unix::{SignalKind, signal};
@@ -30,6 +31,7 @@ enum Command {
     Validate,
     List,
     Status { service: Option<String> },
+    Events { service: String },
     Start { service: String },
     Stop { service: String },
     Restart { service: String },
@@ -45,6 +47,7 @@ async fn main() -> Result<()> {
         Command::Validate => validate(cli.config_dir, cli.json),
         Command::List => print_status(&cli.socket, None, cli.json).await,
         Command::Status { service } => print_status(&cli.socket, service, cli.json).await,
+        Command::Events { service } => print_events(&cli.socket, &service, cli.json).await,
         Command::Start { service } => {
             command_ok(&cli.socket, ControlRequest::Start { service }).await
         }
@@ -181,6 +184,53 @@ async fn print_status(socket: &std::path::Path, service: Option<String>, json: b
         ControlResponse::Ok => Err(SupperError::Protocol(
             "unexpected control response".to_string(),
         )),
+    }
+}
+
+async fn print_events(socket: &std::path::Path, service: &str, json: bool) -> Result<()> {
+    let response = control::request(
+        socket,
+        ControlRequest::Status {
+            service: Some(service.to_string()),
+        },
+    )
+    .await?;
+    match response {
+        ControlResponse::Status { services } => {
+            let service = services
+                .into_iter()
+                .next()
+                .ok_or_else(|| SupperError::Protocol("missing service status".to_string()))?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&service.event_history)
+                        .map_err(|err| SupperError::Protocol(err.to_string()))?
+                );
+                return Ok(());
+            }
+            print_event_table(&service.event_history);
+            Ok(())
+        }
+        ControlResponse::Error { error } => Err(SupperError::Protocol(format!(
+            "{}: {}",
+            error.code, error.message
+        ))),
+        ControlResponse::Ok => Err(SupperError::Protocol(
+            "unexpected control response".to_string(),
+        )),
+    }
+}
+
+fn print_event_table(events: &[ServiceEvent]) {
+    println!("{:<12} {:<24} MESSAGE", "TIME", "KIND");
+    for event in events {
+        println!(
+            "{:<12} {:<24} {}",
+            event.at_unix_seconds,
+            format!("{:?}", event.kind),
+            event.message
+        );
     }
 }
 
