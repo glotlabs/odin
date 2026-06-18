@@ -151,12 +151,12 @@ async fn print_status(socket: &std::path::Path, service: Option<String>, json: b
                 return Ok(());
             }
             println!(
-                "{:<24} {:<12} {:<8} {:<8} HEALTH",
-                "NAME", "STATE", "PID", "RESTARTS"
+                "{:<24} {:<12} {:<8} {:<8} {:<16} HEALTH",
+                "NAME", "STATE", "PID", "RESTARTS", "LAST-RESTART"
             );
             for service in services {
                 println!(
-                    "{:<24} {:<12} {:<8} {:<8} {:?}",
+                    "{:<24} {:<12} {:<8} {:<8} {:<16} {:?}",
                     service.name,
                     format!("{:?}", service.state),
                     service
@@ -164,6 +164,11 @@ async fn print_status(socket: &std::path::Path, service: Option<String>, json: b
                         .map(|pid| pid.to_string())
                         .unwrap_or_else(|| "-".to_string()),
                     service.restart_count,
+                    service
+                        .restart_history
+                        .last()
+                        .map(|entry| format!("{:?}", entry.reason))
+                        .unwrap_or_else(|| "-".to_string()),
                     service.health
                 );
             }

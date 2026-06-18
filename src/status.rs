@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub const MAX_RESTART_HISTORY: usize = 64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ServiceState {
@@ -21,6 +23,25 @@ pub enum HealthStatus {
     Unready(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RestartReason {
+    Automatic,
+    Manual,
+    Reload,
+    HealthCheck,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestartHistoryEntry {
+    pub at_unix_seconds: u64,
+    pub reason: RestartReason,
+    pub from_pid: Option<u32>,
+    pub to_pid: Option<u32>,
+    pub exit: Option<String>,
+    pub backoff_millis: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceStatus {
     pub name: String,
@@ -30,4 +51,5 @@ pub struct ServiceStatus {
     pub restart_count: u64,
     pub last_exit: Option<String>,
     pub health: HealthStatus,
+    pub restart_history: Vec<RestartHistoryEntry>,
 }

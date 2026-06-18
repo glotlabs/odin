@@ -4,7 +4,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use supper::config::{self, HealthAction, HealthCheckConfig, HealthCheckKind, RestartPolicy};
 use supper::control::{ControlRequest, ControlResponse};
-use supper::status::ServiceState;
+use supper::service::ServiceRuntime;
+use supper::status::{MAX_RESTART_HISTORY, RestartHistoryEntry, RestartReason, ServiceState};
 use supper::supervisor::SupervisorHandle;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixStream};
@@ -167,6 +168,27 @@ autostart = false
     assert!(err.to_string().contains("command does not exist"));
 }
 
+#[test]
+fn restart_history_is_bounded() {
+    let service = config::derive_service_config("bounded");
+    let mut runtime = ServiceRuntime::new(service);
+
+    for index in 0..(MAX_RESTART_HISTORY + 10) {
+        runtime.record_restart(RestartHistoryEntry {
+            at_unix_seconds: index as u64,
+            reason: RestartReason::Automatic,
+            from_pid: Some(index as u32),
+            to_pid: Some((index + 1) as u32),
+            exit: Some("exit status: 1".to_string()),
+            backoff_millis: Some(100),
+        });
+    }
+
+    let status = runtime.status();
+    assert_eq!(status.restart_history.len(), MAX_RESTART_HISTORY);
+    assert_eq!(status.restart_history[0].at_unix_seconds, 10);
+}
+
 #[tokio::test]
 async fn status_returns_configured_service_state() {
     let dir = temp_dir("status");
@@ -271,6 +293,14 @@ restart_max_delay = "100ms"
         ServiceState::BackingOff | ServiceState::Running
     ));
     assert!(statuses[0].restart_count >= 1);
+    let entry = statuses[0]
+        .restart_history
+        .last()
+        .expect("automatic restart should be recorded");
+    assert_eq!(entry.reason, RestartReason::Automatic);
+    assert!(entry.exit.as_deref().unwrap_or("").contains("1"));
+    assert_eq!(entry.backoff_millis, Some(50));
+    assert!(entry.to_pid.is_some());
 }
 
 #[tokio::test]
@@ -612,6 +642,18 @@ stop_timeout = "100ms"
         .pid
         .expect("pid after");
     assert_ne!(before, after);
+    let status = supervisor
+        .status(Some("worker"))
+        .await
+        .expect("status after restart")
+        .remove(0);
+    let entry = status
+        .restart_history
+        .last()
+        .expect("manual restart should be recorded");
+    assert_eq!(entry.reason, RestartReason::Manual);
+    assert_eq!(entry.from_pid, Some(before));
+    assert_eq!(entry.to_pid, Some(after));
 
     server.abort();
     supervisor.stop("worker").await.expect("stop");

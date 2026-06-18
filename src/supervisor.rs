@@ -11,7 +11,9 @@ use crate::child;
 use crate::config::{HealthAction, ServiceConfig};
 use crate::error::{Result, SupperError};
 use crate::service::ServiceRuntime;
-use crate::status::{HealthStatus, ServiceState, ServiceStatus};
+use crate::status::{
+    HealthStatus, RestartHistoryEntry, RestartReason, ServiceState, ServiceStatus,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReloadSummary {
@@ -85,7 +87,7 @@ impl SupervisorHandle {
             service.state = ServiceState::Starting;
             service.config.clone()
         };
-        self.spawn_and_track(config, false)
+        self.spawn_and_track(config, None)
     }
 
     pub async fn stop(&self, name: &str) -> Result<()> {
@@ -114,6 +116,17 @@ impl SupervisorHandle {
     }
 
     pub async fn restart(&self, name: &str) -> Result<()> {
+        self.restart_with_reason(name, RestartReason::Manual).await
+    }
+
+    async fn restart_with_reason(&self, name: &str, reason: RestartReason) -> Result<()> {
+        let from_pid = {
+            let services = self.services()?;
+            let service = services
+                .get(name)
+                .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?;
+            service.pid
+        };
         let exists_and_running = {
             let services = self.services()?;
             let service = services
@@ -124,7 +137,32 @@ impl SupervisorHandle {
         if exists_and_running {
             self.stop(name).await?;
         }
-        self.start(name).await
+        let config = {
+            let mut services = self.services()?;
+            let service = services
+                .get_mut(name)
+                .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?;
+            if matches!(
+                service.state,
+                ServiceState::Running | ServiceState::Starting | ServiceState::Stopping
+            ) {
+                return Err(SupperError::AlreadyRunning(name.to_string()));
+            }
+            service.desired_running = true;
+            service.state = ServiceState::Starting;
+            service.config.clone()
+        };
+        self.spawn_and_track(
+            config,
+            Some(RestartHistoryEntry {
+                at_unix_seconds: now_unix_seconds(),
+                reason,
+                from_pid,
+                to_pid: None,
+                exit: None,
+                backoff_millis: None,
+            }),
+        )
     }
 
     pub async fn shutdown(&self) {
@@ -224,7 +262,8 @@ impl SupervisorHandle {
         }
 
         for name in restart_names {
-            self.restart(&name).await?;
+            self.restart_with_reason(&name, RestartReason::Reload)
+                .await?;
         }
 
         for name in start_required {
@@ -247,7 +286,11 @@ impl SupervisorHandle {
         Ok(summary)
     }
 
-    fn spawn_and_track(&self, config: ServiceConfig, count_restart: bool) -> Result<()> {
+    fn spawn_and_track(
+        &self,
+        config: ServiceConfig,
+        restart_entry: Option<RestartHistoryEntry>,
+    ) -> Result<()> {
         let mut child = child::spawn_service(&config)?;
         let pid = child.id();
         let generation;
@@ -265,8 +308,10 @@ impl SupervisorHandle {
             service.health = HealthStatus::Unknown;
             service.health_failures = 0;
             service.reset_backoff();
-            if count_restart {
+            if let Some(mut entry) = restart_entry {
+                entry.to_pid = pid;
                 service.restart_count += 1;
+                service.record_restart(entry);
             }
         }
 
@@ -298,7 +343,7 @@ impl SupervisorHandle {
         pid: Option<u32>,
         exit: std::io::Result<std::process::ExitStatus>,
     ) {
-        let (should_restart, delay, config) = {
+        let (should_restart, delay, config, exit_message) = {
             let Ok(mut services) = self.services() else {
                 return;
             };
@@ -315,7 +360,7 @@ impl SupervisorHandle {
             let successful = exit.as_ref().is_ok_and(std::process::ExitStatus::success);
             service.pid = None;
             service.started_at = None;
-            service.last_exit = Some(message);
+            service.last_exit = Some(message.clone());
             service.notify_stopped();
             if !service.desired_running {
                 service.state = ServiceState::Stopped;
@@ -325,14 +370,14 @@ impl SupervisorHandle {
             if should_restart {
                 service.state = ServiceState::BackingOff;
                 let delay = service.advance_backoff();
-                (true, delay, Some(service.config.clone()))
+                (true, delay, Some(service.config.clone()), message)
             } else {
                 service.state = if successful {
                     ServiceState::Stopped
                 } else {
                     ServiceState::Failed
                 };
-                (false, Duration::ZERO, None)
+                (false, Duration::ZERO, None, message)
             }
         };
 
@@ -348,7 +393,19 @@ impl SupervisorHandle {
                         .map(|service| service.desired_running)
                         .unwrap_or(false)
                 };
-                if desired && let Err(err) = self.spawn_and_track(config, true) {
+                if desired
+                    && let Err(err) = self.spawn_and_track(
+                        config,
+                        Some(RestartHistoryEntry {
+                            at_unix_seconds: now_unix_seconds(),
+                            reason: RestartReason::Automatic,
+                            from_pid: pid,
+                            to_pid: None,
+                            exit: Some(exit_message),
+                            backoff_millis: Some(delay.as_millis() as u64),
+                        }),
+                    )
+                {
                     tracing::error!("failed to restart {name}: {err}");
                 }
             }
@@ -422,7 +479,9 @@ impl SupervisorHandle {
                 }
             }
             if restart {
-                let _ = self.restart(&name).await;
+                let _ = self
+                    .restart_with_reason(&name, RestartReason::HealthCheck)
+                    .await;
                 return;
             }
         }
@@ -457,4 +516,11 @@ fn restart_required(old: &ServiceConfig, new: &ServiceConfig) -> bool {
         || old.umask != new.umask
         || old.stdout_log != new.stdout_log
         || old.stderr_log != new.stderr_log
+}
+
+fn now_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }

@@ -33,6 +33,11 @@ supper stop my-app
 supper restart my-app
 ```
 
+`supper status` includes the most recent restart reason in the human table.
+`supper --json status` includes bounded restart history for each service. The
+history keeps the last 64 restart records with timestamp, reason, previous PID,
+new PID, exit text when available, and backoff delay in milliseconds.
+
 ## Service Config
 
 ```toml

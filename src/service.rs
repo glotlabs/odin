@@ -1,9 +1,12 @@
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
 
 use crate::config::{RestartPolicy, ServiceConfig};
-use crate::status::{HealthStatus, ServiceState, ServiceStatus};
+use crate::status::{
+    HealthStatus, MAX_RESTART_HISTORY, RestartHistoryEntry, ServiceState, ServiceStatus,
+};
 
 pub struct ServiceRuntime {
     pub config: ServiceConfig,
@@ -18,6 +21,7 @@ pub struct ServiceRuntime {
     pub health: HealthStatus,
     pub health_failures: u32,
     pub stop_waiters: Vec<oneshot::Sender<()>>,
+    pub restart_history: VecDeque<RestartHistoryEntry>,
 }
 
 impl ServiceRuntime {
@@ -37,6 +41,7 @@ impl ServiceRuntime {
             health: HealthStatus::Unknown,
             health_failures: 0,
             stop_waiters: Vec::new(),
+            restart_history: VecDeque::new(),
         }
     }
 
@@ -49,6 +54,7 @@ impl ServiceRuntime {
             restart_count: self.restart_count,
             last_exit: self.last_exit.clone(),
             health: self.health.clone(),
+            restart_history: self.restart_history.iter().cloned().collect(),
         }
     }
 
@@ -78,5 +84,12 @@ impl ServiceRuntime {
         for waiter in self.stop_waiters.drain(..) {
             let _ = waiter.send(());
         }
+    }
+
+    pub fn record_restart(&mut self, entry: RestartHistoryEntry) {
+        if self.restart_history.len() == MAX_RESTART_HISTORY {
+            self.restart_history.pop_front();
+        }
+        self.restart_history.push_back(entry);
     }
 }
