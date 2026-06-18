@@ -1,0 +1,25 @@
+name = "web"
+command = "/usr/local/bin/my-web-app"
+args = ["--host", "127.0.0.1", "--port", "8080"]
+cwd = "/usr/local/my-web-app"
+autostart = true
+
+env = { RUST_LOG = "info" }
+
+user = "www"
+group = "www"
+
+restart = "on-failure"
+restart_initial_delay = "1s"
+restart_max_delay = "30s"
+
+stdout_log = "/var/log/supper/web.out.log"
+stderr_log = "/var/log/supper/web.err.log"
+
+[healthcheck]
+type = "http"
+url = "http://127.0.0.1:8080/health"
+interval = "10s"
+timeout = "2s"
+retries = 3
+action = "restart"

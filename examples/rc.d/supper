@@ -1,0 +1,23 @@
+#!/bin/sh
+
+# PROVIDE: supper
+# REQUIRE: LOGIN
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="supper"
+rcvar="supper_enable"
+
+: ${supper_enable:="NO"}
+: ${supper_config_dir:="/usr/local/etc/supper/services"}
+: ${supper_socket:="/var/run/supper.sock"}
+: ${supper_user:="root"}
+
+command="/usr/sbin/daemon"
+pidfile="/var/run/${name}.pid"
+procname="/usr/local/bin/supper"
+command_args="-f -p ${pidfile} ${procname} --config-dir ${supper_config_dir} --socket ${supper_socket} monitor"
+
+load_rc_config "$name"
+run_rc_command "$1"

@@ -1,0 +1,11 @@
+name = "hello"
+command = "/bin/sh"
+args = ["-c", "while true; do echo hello; sleep 5; done"]
+autostart = true
+
+restart = "always"
+restart_initial_delay = "1s"
+restart_max_delay = "30s"
+
+stdout_log = "/var/log/supper/hello.out.log"
+stderr_log = "/var/log/supper/hello.err.log"
