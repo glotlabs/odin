@@ -114,6 +114,13 @@ should drop privileges to a dedicated account.
 Logs are appended directly to files. Log rotation is intentionally left to
 FreeBSD `newsyslog`; see `examples/newsyslog/supper.conf`.
 
+Managed services never inherit the caller's stdio. For each app process,
+`stdin` is opened from `/dev/null`; configured `stdout_log` and `stderr_log`
+receive output, and missing log paths fall back to `/dev/null`. `supper monitor`
+also detaches its own stdio to `/dev/null` when it starts so it cannot keep a CI
+runner's log-capture pipes open. Short-lived control commands such as
+`supper restart my-app` still use the caller's stdio and then exit.
+
 ## rc.d
 
 An example script is provided at `examples/rc.d/supper`. The supervisor itself

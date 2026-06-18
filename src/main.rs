@@ -93,6 +93,7 @@ fn validate(config_dir: PathBuf, json: bool) -> Result<()> {
 }
 
 async fn monitor(config_dir: PathBuf, socket: PathBuf) -> Result<()> {
+    supper::logging::detach_process_stdio()?;
     let services = config::load_services(&config_dir)?;
     for service in &services {
         supper::logging::prepare_log_dirs(service)?;

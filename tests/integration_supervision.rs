@@ -306,6 +306,82 @@ restart = "never"
 }
 
 #[tokio::test]
+async fn service_stdio_without_logs_goes_to_dev_null() {
+    let dir = temp_dir("stdio-null");
+    let marker = dir.join("fds.txt");
+    let path = write_service(
+        &dir,
+        "stdio",
+        &format!(
+            r#"
+name = "stdio"
+command = "/bin/sh"
+args = ["-c", "exec 3>\"$MARKER\"; ls -l /dev/fd/0 /dev/fd/1 /dev/fd/2 >&3"]
+autostart = false
+restart = "never"
+env = {{ MARKER = "{}" }}
+"#,
+            marker.display()
+        ),
+    );
+    let service = config::load_service(&path).expect("service config should load");
+    let supervisor = SupervisorHandle::new(vec![service]);
+
+    supervisor.start("stdio").await.expect("start");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let fds = fs::read_to_string(marker).expect("fd marker should exist");
+    assert_eq!(fds.lines().count(), 3);
+    for line in fds.lines() {
+        assert_ne!(
+            line.chars().next(),
+            Some('p'),
+            "managed service inherited a pipe fd: {line}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn service_stdout_and_stderr_are_logged_when_configured() {
+    let dir = temp_dir("stdio-logs");
+    let stdout_log = dir.join("service.out.log");
+    let stderr_log = dir.join("service.err.log");
+    let path = write_service(
+        &dir,
+        "logger",
+        &format!(
+            r#"
+name = "logger"
+command = "/bin/sh"
+args = ["-c", "echo stdout-line; echo stderr-line >&2"]
+autostart = false
+restart = "never"
+stdout_log = "{}"
+stderr_log = "{}"
+"#,
+            stdout_log.display(),
+            stderr_log.display()
+        ),
+    );
+    let service = config::load_service(&path).expect("service config should load");
+    let supervisor = SupervisorHandle::new(vec![service]);
+
+    supervisor.start("logger").await.expect("start");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(
+        fs::read_to_string(stdout_log)
+            .expect("stdout log")
+            .contains("stdout-line")
+    );
+    assert!(
+        fs::read_to_string(stderr_log)
+            .expect("stderr log")
+            .contains("stderr-line")
+    );
+}
+
+#[tokio::test]
 async fn crashing_service_restarts_with_backoff() {
     let dir = temp_dir("backoff");
     let path = write_service(

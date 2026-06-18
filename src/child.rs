@@ -18,12 +18,9 @@ pub fn spawn_service(config: &ServiceConfig) -> Result<Child> {
         command.current_dir(cwd);
     }
     command.envs(&config.env);
-    if let Some(stdout) = logs.stdout {
-        command.stdout(stdout);
-    }
-    if let Some(stderr) = logs.stderr {
-        command.stderr(stderr);
-    }
+    command.stdin(logs.stdin);
+    command.stdout(logs.stdout);
+    command.stderr(logs.stderr);
 
     let umask_value = config.umask;
     unsafe {
