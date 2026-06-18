@@ -26,6 +26,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Monitor,
+    Validate,
     List,
     Status { service: Option<String> },
     Start { service: String },
@@ -39,6 +40,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Monitor) {
         Command::Monitor => monitor(cli.config_dir, cli.socket).await,
+        Command::Validate => validate(cli.config_dir, cli.json),
         Command::List => print_status(&cli.socket, None, cli.json).await,
         Command::Status { service } => print_status(&cli.socket, service, cli.json).await,
         Command::Start { service } => {
@@ -51,6 +53,23 @@ async fn main() -> Result<()> {
             command_ok(&cli.socket, ControlRequest::Restart { service }).await
         }
     }
+}
+
+fn validate(config_dir: PathBuf, json: bool) -> Result<()> {
+    let report = config::validate_config_dir(&config_dir)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .map_err(|err| SupperError::Protocol(err.to_string()))?
+        );
+    } else {
+        println!("valid: {} service(s)", report.service_count);
+        for warning in report.warnings {
+            println!("warning: {}: {}", warning.service, warning.message);
+        }
+    }
+    Ok(())
 }
 
 async fn monitor(config_dir: PathBuf, socket: PathBuf) -> Result<()> {
@@ -82,7 +101,8 @@ async fn monitor(config_dir: PathBuf, socket: PathBuf) -> Result<()> {
                     Ok(services) => match supervisor.reload(services).await {
                         Ok(summary) => tracing::info!(
                             added = ?summary.added,
-                            updated = ?summary.updated,
+                            live_updated = ?summary.live_updated,
+                            restarted = ?summary.restarted,
                             removed = ?summary.removed,
                             "configuration reloaded"
                         ),

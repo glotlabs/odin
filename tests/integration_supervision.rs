@@ -79,6 +79,48 @@ command = "/bin/sh"
     assert!(err.to_string().contains("duplicate service name"));
 }
 
+#[test]
+fn validate_config_dir_reports_valid_services_and_warnings() {
+    let dir = temp_dir("validate");
+    let log_dir = dir.join("missing-log-dir");
+    write_service(
+        &dir,
+        "valid",
+        &format!(
+            r#"
+name = "valid"
+command = "/bin/sh"
+autostart = false
+stdout_log = "{}/valid.out.log"
+"#,
+            log_dir.display()
+        ),
+    );
+
+    let report = config::validate_config_dir(&dir).expect("validation should pass");
+
+    assert_eq!(report.service_count, 1);
+    assert_eq!(report.warnings.len(), 1);
+    assert!(report.warnings[0].message.contains("will be created"));
+}
+
+#[test]
+fn validate_config_dir_rejects_missing_command() {
+    let dir = temp_dir("validate-missing-command");
+    write_service(
+        &dir,
+        "missing",
+        r#"
+name = "missing"
+command = "/definitely/not/a/supper/test/command"
+autostart = false
+"#,
+    );
+
+    let err = config::validate_config_dir(&dir).expect_err("missing command must fail");
+    assert!(err.to_string().contains("command does not exist"));
+}
+
 #[tokio::test]
 async fn status_returns_configured_service_state() {
     let dir = temp_dir("status");
@@ -234,6 +276,108 @@ stop_timeout = "100ms"
 
     assert_eq!(summary.removed, vec!["gone"]);
     assert!(supervisor.status(Some("gone")).await.is_err());
+}
+
+#[tokio::test]
+async fn reload_live_update_keeps_running_process() {
+    let dir = temp_dir("reload-live");
+    let original = write_service(
+        &dir,
+        "live",
+        r#"
+name = "live"
+command = "/bin/sh"
+args = ["-c", "sleep 60"]
+autostart = false
+restart = "never"
+stop_timeout = "100ms"
+"#,
+    );
+    let updated = write_service(
+        &dir,
+        "live-updated",
+        r#"
+name = "live"
+command = "/bin/sh"
+args = ["-c", "sleep 60"]
+autostart = false
+restart = "always"
+restart_initial_delay = "20ms"
+restart_max_delay = "20ms"
+stop_timeout = "100ms"
+"#,
+    );
+    let service = config::load_service(&original).expect("service config should load");
+    let updated_service = config::load_service(&updated).expect("updated config should load");
+    let supervisor = SupervisorHandle::new(vec![service]);
+
+    supervisor.start("live").await.expect("start");
+    let before = supervisor.status(Some("live")).await.expect("status")[0]
+        .pid
+        .expect("pid before");
+    let summary = supervisor
+        .reload(vec![updated_service])
+        .await
+        .expect("reload");
+    let after = supervisor.status(Some("live")).await.expect("status")[0]
+        .pid
+        .expect("pid after");
+
+    assert_eq!(summary.live_updated, vec!["live"]);
+    assert!(summary.restarted.is_empty());
+    assert_eq!(before, after);
+
+    supervisor.stop("live").await.expect("stop");
+}
+
+#[tokio::test]
+async fn reload_process_change_restarts_running_process() {
+    let dir = temp_dir("reload-restart");
+    let original = write_service(
+        &dir,
+        "worker",
+        r#"
+name = "worker"
+command = "/bin/sh"
+args = ["-c", "sleep 60"]
+autostart = false
+restart = "never"
+stop_timeout = "100ms"
+"#,
+    );
+    let updated = write_service(
+        &dir,
+        "worker-updated",
+        r#"
+name = "worker"
+command = "/bin/sh"
+args = ["-c", "sleep 61"]
+autostart = false
+restart = "never"
+stop_timeout = "100ms"
+"#,
+    );
+    let service = config::load_service(&original).expect("service config should load");
+    let updated_service = config::load_service(&updated).expect("updated config should load");
+    let supervisor = SupervisorHandle::new(vec![service]);
+
+    supervisor.start("worker").await.expect("start");
+    let before = supervisor.status(Some("worker")).await.expect("status")[0]
+        .pid
+        .expect("pid before");
+    let summary = supervisor
+        .reload(vec![updated_service])
+        .await
+        .expect("reload");
+    let after = supervisor.status(Some("worker")).await.expect("status")[0]
+        .pid
+        .expect("pid after");
+
+    assert_eq!(summary.restarted, vec!["worker"]);
+    assert!(summary.live_updated.is_empty());
+    assert_ne!(before, after);
+
+    supervisor.stop("worker").await.expect("stop");
 }
 
 #[tokio::test]

@@ -7,6 +7,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, SupperError};
+use crate::privileges::Privileges;
 
 fn default_autostart() -> bool {
     true
@@ -117,6 +118,18 @@ pub enum HealthCheckKind {
     Http,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationReport {
+    pub service_count: usize,
+    pub warnings: Vec<ValidationIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationIssue {
+    pub service: String,
+    pub message: String,
+}
+
 pub fn load_services(config_dir: &Path) -> Result<Vec<ServiceConfig>> {
     let mut services = Vec::new();
     for entry in fs::read_dir(config_dir)? {
@@ -129,6 +142,21 @@ pub fn load_services(config_dir: &Path) -> Result<Vec<ServiceConfig>> {
     }
     validate_unique_names(&services)?;
     Ok(services)
+}
+
+pub fn validate_config_dir(config_dir: &Path) -> Result<ValidationReport> {
+    let services = load_services(config_dir)?;
+    let mut warnings = Vec::new();
+
+    for service in &services {
+        validate_runtime_inputs(service)?;
+        collect_log_warnings(service, &mut warnings)?;
+    }
+
+    Ok(ValidationReport {
+        service_count: services.len(),
+        warnings,
+    })
 }
 
 pub fn load_service(path: &Path) -> Result<ServiceConfig> {
@@ -197,5 +225,92 @@ fn validate_service(path: &Path, service: &ServiceConfig) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn validate_runtime_inputs(service: &ServiceConfig) -> Result<()> {
+    let invalid = |message: String| SupperError::InvalidConfig {
+        path: PathBuf::from(format!("<service:{}>", service.name)),
+        message,
+    };
+
+    if !service.command.is_absolute() {
+        return Err(invalid("command must be an absolute path".to_string()));
+    }
+    if !service.command.exists() {
+        return Err(invalid(format!(
+            "command does not exist: {}",
+            service.command.display()
+        )));
+    }
+    if let Some(cwd) = &service.cwd
+        && !cwd.is_dir()
+    {
+        return Err(invalid(format!(
+            "cwd does not exist or is not a directory: {}",
+            cwd.display()
+        )));
+    }
+
+    Privileges::resolve(service).map_err(|err| {
+        invalid(format!(
+            "privilege configuration is invalid for service {}: {err}",
+            service.name
+        ))
+    })?;
+
+    if let Some(health) = &service.healthcheck
+        && health.kind == HealthCheckKind::Command
+        && let Some(command) = &health.command
+    {
+        if !command.is_absolute() {
+            return Err(invalid(
+                "command healthcheck command must be an absolute path".to_string(),
+            ));
+        }
+        if !command.exists() {
+            return Err(invalid(format!(
+                "command healthcheck command does not exist: {}",
+                command.display()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_log_warnings(
+    service: &ServiceConfig,
+    warnings: &mut Vec<ValidationIssue>,
+) -> Result<()> {
+    for path in [&service.stdout_log, &service.stderr_log]
+        .into_iter()
+        .flatten()
+    {
+        if !path.is_absolute() {
+            return Err(SupperError::InvalidConfig {
+                path: PathBuf::from(format!("<service:{}>", service.name)),
+                message: format!("log path must be absolute: {}", path.display()),
+            });
+        }
+        let Some(parent) = path.parent() else {
+            continue;
+        };
+        if parent.exists() && !parent.is_dir() {
+            return Err(SupperError::InvalidConfig {
+                path: PathBuf::from(format!("<service:{}>", service.name)),
+                message: format!("log parent is not a directory: {}", parent.display()),
+            });
+        }
+        if !parent.exists() {
+            warnings.push(ValidationIssue {
+                service: service.name.clone(),
+                message: format!(
+                    "log directory does not exist yet and will be created by monitor: {}",
+                    parent.display()
+                ),
+            });
+        }
+    }
     Ok(())
 }

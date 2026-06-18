@@ -16,7 +16,8 @@ use crate::status::{HealthStatus, ServiceState, ServiceStatus};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReloadSummary {
     pub added: Vec<String>,
-    pub updated: Vec<String>,
+    pub live_updated: Vec<String>,
+    pub restarted: Vec<String>,
     pub removed: Vec<String>,
 }
 
@@ -143,22 +144,48 @@ impl SupervisorHandle {
             .into_iter()
             .map(|config| (config.name.clone(), config))
             .collect::<BTreeMap<_, _>>();
-        let (removed_running, summary) = {
+        let (removed_running, restart_names, start_required, health_loop_required, summary) = {
             let mut services = self.services()?;
             let mut summary = ReloadSummary::default();
+            let mut restart_names = Vec::new();
+            let mut start_required = Vec::new();
+            let mut health_loop_required = Vec::new();
 
             for (name, config) in &new_by_name {
                 match services.get_mut(name) {
                     Some(service) if service.config != *config => {
+                        let was_running = service.pid.is_some();
+                        let needs_restart =
+                            was_running && restart_required(&service.config, config);
+                        let needs_health_loop = was_running
+                            && service.config.healthcheck.is_none()
+                            && config.healthcheck.is_some();
                         service.config = config.clone();
-                        service.desired_running = config.autostart || service.pid.is_some();
+                        service.desired_running = config.autostart || was_running;
                         service.reset_backoff();
-                        summary.updated.push(name.clone());
+                        if needs_restart {
+                            summary.restarted.push(name.clone());
+                            restart_names.push(name.clone());
+                        } else {
+                            summary.live_updated.push(name.clone());
+                            if needs_health_loop {
+                                health_loop_required.push((name.clone(), service.generation));
+                            }
+                            if !was_running && config.autostart {
+                                start_required.push(name.clone());
+                            }
+                        }
+                    }
+                    Some(service) if service.pid.is_none() && service.config.autostart => {
+                        start_required.push(name.clone());
                     }
                     Some(_) => {}
                     None => {
                         services.insert(name.clone(), ServiceRuntime::new(config.clone()));
                         summary.added.push(name.clone());
+                        if config.autostart {
+                            start_required.push(name.clone());
+                        }
                     }
                 }
             }
@@ -181,7 +208,13 @@ impl SupervisorHandle {
                 }
             }
 
-            (removed_running, summary)
+            (
+                removed_running,
+                restart_names,
+                start_required,
+                health_loop_required,
+                summary,
+            )
         };
 
         for name in removed_running {
@@ -190,17 +223,25 @@ impl SupervisorHandle {
             services.remove(&name);
         }
 
-        for name in &summary.added {
-            let autostart = {
+        for name in restart_names {
+            self.restart(&name).await?;
+        }
+
+        for name in start_required {
+            let should_start = {
                 let services = self.services()?;
                 services
-                    .get(name)
-                    .map(|service| service.config.autostart)
+                    .get(&name)
+                    .map(|service| service.pid.is_none() && service.config.autostart)
                     .unwrap_or(false)
             };
-            if autostart {
-                self.start(name).await?;
+            if should_start {
+                self.start(&name).await?;
             }
+        }
+
+        for (name, generation) in health_loop_required {
+            self.spawn_health_loop(name, generation);
         }
 
         Ok(summary)
@@ -237,13 +278,17 @@ impl SupervisorHandle {
         });
 
         if config.healthcheck.is_some() {
-            let handle = self.clone();
-            tokio::spawn(async move {
-                handle.health_loop(config.name, generation).await;
-            });
+            self.spawn_health_loop(config.name, generation);
         }
 
         Ok(())
+    }
+
+    fn spawn_health_loop(&self, name: String, generation: u64) {
+        let handle = self.clone();
+        tokio::spawn(async move {
+            handle.health_loop(name, generation).await;
+        });
     }
 
     async fn handle_exit(
@@ -400,4 +445,16 @@ fn process_group_exists(pgid: Pid) -> bool {
         return true;
     }
     std::io::Error::last_os_error().raw_os_error() != Some(nix::libc::ESRCH)
+}
+
+fn restart_required(old: &ServiceConfig, new: &ServiceConfig) -> bool {
+    old.command != new.command
+        || old.args != new.args
+        || old.cwd != new.cwd
+        || old.env != new.env
+        || old.user != new.user
+        || old.group != new.group
+        || old.umask != new.umask
+        || old.stdout_log != new.stdout_log
+        || old.stderr_log != new.stderr_log
 }

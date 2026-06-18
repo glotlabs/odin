@@ -25,6 +25,8 @@ Query and control services:
 supper status
 supper status my-app
 supper --json status
+supper validate
+supper --json validate
 supper start my-app
 supper stop my-app
 supper restart my-app
@@ -68,9 +70,19 @@ Health actions are `ignore`, `mark-unready`, and `restart`.
 `supper monitor` handles `SIGHUP` by reloading the config directory. Reloading:
 
 - adds new services and starts them when `autostart = true`
-- updates stored configuration for existing services
+- applies live-only changes without restarting the process
+- restarts running services when process-affecting fields change
 - stops and removes services deleted from the config directory
 - keeps already-running services running when their config still exists
+
+Process-affecting fields are `command`, `args`, `cwd`, `env`, `user`, `group`,
+`umask`, `stdout_log`, and `stderr_log`. Restart policy, restart delays, stop
+timeout, autostart, and health-check changes are live updates.
+
+`supper validate` checks all service config files without starting anything. It
+parses TOML, checks duplicate names, validates user/group lookups, verifies
+absolute command paths exist, checks `cwd`, and reports log directories that
+will be created by the monitor.
 
 Logs are appended directly to files. Log rotation is intentionally left to
 FreeBSD `newsyslog`; see `examples/newsyslog/supper.conf`.
