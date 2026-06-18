@@ -24,6 +24,22 @@ pub struct ReloadSummary {
     pub removed: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OperationResult {
+    pub service: String,
+    pub action: OperationAction,
+    pub message: String,
+    pub status: ServiceStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OperationAction {
+    Started,
+    Stopped,
+    Restarted,
+}
+
 #[derive(Clone)]
 pub struct SupervisorHandle {
     inner: Arc<Mutex<BTreeMap<String, ServiceRuntime>>>,
@@ -72,7 +88,7 @@ impl SupervisorHandle {
         Ok(services.values().map(ServiceRuntime::status).collect())
     }
 
-    pub async fn start(&self, name: &str) -> Result<()> {
+    pub async fn start(&self, name: &str) -> Result<OperationResult> {
         let config = {
             let mut services = self.services()?;
             let service = services
@@ -89,10 +105,13 @@ impl SupervisorHandle {
             service.record_event(ServiceEventKind::Started, "start requested");
             service.config.clone()
         };
-        self.spawn_and_track(config, None)
+        self.spawn_and_track(config.clone(), None)?;
+        self.wait_for_startup(&config.name, config.startup_timeout)
+            .await?;
+        self.operation_result(&config.name, OperationAction::Started, "service started")
     }
 
-    pub async fn stop(&self, name: &str) -> Result<()> {
+    pub async fn stop(&self, name: &str) -> Result<OperationResult> {
         let (pid, timeout, stopped) = {
             let mut services = self.services()?;
             let service = services
@@ -103,7 +122,11 @@ impl SupervisorHandle {
                 service.state = ServiceState::Stopped;
                 service.record_event(ServiceEventKind::Stopped, "service already stopped");
                 service.notify_stopped();
-                return Ok(());
+                return self.operation_result(
+                    name,
+                    OperationAction::Stopped,
+                    "service already stopped",
+                );
             }
             service.state = ServiceState::Stopping;
             service.record_event(
@@ -116,7 +139,11 @@ impl SupervisorHandle {
         };
 
         let Some(pid) = pid else {
-            return Ok(());
+            return self.operation_result(
+                name,
+                OperationAction::Stopped,
+                "service already stopped",
+            );
         };
         let escalated = terminate_process_group(pid, timeout, stopped).await;
         if escalated {
@@ -128,14 +155,18 @@ impl SupervisorHandle {
                 );
             }
         }
-        Ok(())
+        self.operation_result(name, OperationAction::Stopped, "service stopped")
     }
 
-    pub async fn restart(&self, name: &str) -> Result<()> {
+    pub async fn restart(&self, name: &str) -> Result<OperationResult> {
         self.restart_with_reason(name, RestartReason::Manual).await
     }
 
-    async fn restart_with_reason(&self, name: &str, reason: RestartReason) -> Result<()> {
+    async fn restart_with_reason(
+        &self,
+        name: &str,
+        reason: RestartReason,
+    ) -> Result<OperationResult> {
         let from_pid = {
             let services = self.services()?;
             let service = services
@@ -178,7 +209,17 @@ impl SupervisorHandle {
                 exit: None,
                 backoff_millis: None,
             }),
-        )
+        )?;
+        let config = {
+            let services = self.services()?;
+            services
+                .get(name)
+                .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?
+                .config
+                .clone()
+        };
+        self.wait_for_startup(name, config.startup_timeout).await?;
+        self.operation_result(name, OperationAction::Restarted, "service restarted")
     }
 
     pub async fn shutdown(&self) {
@@ -363,6 +404,65 @@ impl SupervisorHandle {
         }
 
         Ok(())
+    }
+
+    async fn wait_for_startup(&self, name: &str, timeout: Duration) -> Result<()> {
+        let deadline = time::Instant::now() + timeout;
+        loop {
+            let status = {
+                let services = self.services()?;
+                let service = services
+                    .get(name)
+                    .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?;
+                service.status()
+            };
+
+            match status.state {
+                ServiceState::Failed | ServiceState::Stopped | ServiceState::BackingOff => {
+                    return Err(SupperError::Protocol(format!(
+                        "service {name} failed startup: state={:?}, last_exit={}",
+                        status.state,
+                        status.last_exit.unwrap_or_else(|| "unknown".to_string())
+                    )));
+                }
+                ServiceState::Starting | ServiceState::Stopping => {}
+                ServiceState::Running => {}
+            }
+
+            if time::Instant::now() >= deadline {
+                if status.state == ServiceState::Running {
+                    return Ok(());
+                }
+                return Err(SupperError::Protocol(format!(
+                    "service {name} did not stay running within {}ms; state={:?}",
+                    timeout.as_millis(),
+                    status.state
+                )));
+            }
+            time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    fn operation_result(
+        &self,
+        name: &str,
+        action: OperationAction,
+        message: impl Into<String>,
+    ) -> Result<OperationResult> {
+        let status = self
+            .status_now(name)?
+            .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?;
+        Ok(OperationResult {
+            service: name.to_string(),
+            action,
+            message: message.into(),
+            status,
+        })
+    }
+
+    fn status_now(&self, name: &str) -> Result<Option<ServiceStatus>> {
+        let services = self.services()?;
+        Ok(services.get(name).map(ServiceRuntime::status))
     }
 
     fn spawn_health_loop(&self, name: String, generation: u64) {

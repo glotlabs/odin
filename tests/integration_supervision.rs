@@ -18,7 +18,7 @@ fn temp_dir(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("system clock must be after unix epoch")
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("supper-{name}-{nonce}"));
+    let dir = PathBuf::from("/tmp").join(format!("supper-{name}-{nonce}"));
     fs::create_dir_all(&dir).expect("create temp dir");
     dir
 }
@@ -295,7 +295,11 @@ restart = "never"
     let service = config::load_service(&path).expect("service config should load");
     let supervisor = SupervisorHandle::new(vec![service]);
 
-    supervisor.start("oneshot").await.expect("start");
+    let err = supervisor
+        .start("oneshot")
+        .await
+        .expect_err("start should report early exit");
+    assert!(err.to_string().contains("failed startup"));
     tokio::time::sleep(Duration::from_millis(100)).await;
     let statuses = supervisor.status(Some("oneshot")).await.expect("status");
 
@@ -303,6 +307,39 @@ restart = "never"
     assert_eq!(statuses[0].pid, None);
     assert_eq!(statuses[0].restart_count, 0);
     assert!(statuses[0].last_exit.as_deref().unwrap_or("").contains("7"));
+}
+
+#[tokio::test]
+async fn start_reports_failure_when_process_exits_during_startup_window() {
+    let dir = temp_dir("startup-fail");
+    let path = write_service(
+        &dir,
+        "bad-start",
+        r#"
+name = "bad-start"
+command = "/bin/sh"
+args = ["-c", "exit 42"]
+autostart = false
+restart = "never"
+startup_timeout = "200ms"
+"#,
+    );
+    let service = config::load_service(&path).expect("service config should load");
+    let supervisor = SupervisorHandle::new(vec![service]);
+
+    let err = supervisor
+        .start("bad-start")
+        .await
+        .expect_err("start should report early process exit");
+
+    assert!(err.to_string().contains("failed startup"));
+    let status = supervisor
+        .status(Some("bad-start"))
+        .await
+        .expect("status")
+        .remove(0);
+    assert_eq!(status.state, ServiceState::Failed);
+    assert!(status.last_exit.as_deref().unwrap_or("").contains("42"));
 }
 
 #[tokio::test]
@@ -327,7 +364,7 @@ env = {{ MARKER = "{}" }}
     let service = config::load_service(&path).expect("service config should load");
     let supervisor = SupervisorHandle::new(vec![service]);
 
-    supervisor.start("stdio").await.expect("start");
+    let _ = supervisor.start("stdio").await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let fds = fs::read_to_string(marker).expect("fd marker should exist");
@@ -366,7 +403,7 @@ stderr_log = "{}"
     let service = config::load_service(&path).expect("service config should load");
     let supervisor = SupervisorHandle::new(vec![service]);
 
-    supervisor.start("logger").await.expect("start");
+    let _ = supervisor.start("logger").await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(
@@ -400,7 +437,11 @@ restart_max_delay = "100ms"
     let service = config::load_service(&path).expect("service config should load");
     let supervisor = SupervisorHandle::new(vec![service]);
 
-    supervisor.start("crasher").await.expect("start");
+    let err = supervisor
+        .start("crasher")
+        .await
+        .expect_err("start should report crash loop");
+    assert!(err.to_string().contains("failed startup"));
     tokio::time::sleep(Duration::from_millis(180)).await;
     let statuses = supervisor.status(Some("crasher")).await.expect("status");
 
@@ -783,6 +824,66 @@ stop_timeout = "100ms"
 }
 
 #[tokio::test]
+async fn control_start_failure_includes_status_feedback() {
+    let dir = temp_dir("control-start-failure");
+    let socket = dir.join("supper.sock");
+    let path = write_service(
+        &dir,
+        "bad-start",
+        r#"
+name = "bad-start"
+command = "/bin/sh"
+args = ["-c", "exit 42"]
+autostart = false
+restart = "never"
+startup_timeout = "100ms"
+"#,
+    );
+    let service = config::load_service(&path).expect("service config should load");
+    let supervisor = SupervisorHandle::new(vec![service]);
+    let server_supervisor = supervisor.clone();
+    let server_socket = socket.clone();
+    let server_config_dir = dir.clone();
+    let server = tokio::spawn(async move {
+        let _ = supper::control::serve(&server_socket, server_config_dir, server_supervisor).await;
+    });
+
+    for _ in 0..100 {
+        if UnixStream::connect(&socket).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let response = supper::control::request(
+        &socket,
+        ControlRequest::Start {
+            service: "bad-start".to_string(),
+        },
+    )
+    .await
+    .expect("start request should receive response");
+
+    match response {
+        ControlResponse::Error { error } => {
+            assert_eq!(error.code, "protocol");
+            let status = error.status.expect("operation error should include status");
+            assert_eq!(status.state, ServiceState::Failed);
+            assert!(status.last_exit.as_deref().unwrap_or("").contains("42"));
+            assert!(
+                status
+                    .event_history
+                    .iter()
+                    .any(|event| event.kind == ServiceEventKind::Exited)
+            );
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn control_restart_restarts_service() {
     let dir = temp_dir("control-restart");
     let socket = dir.join("supper.sock");
@@ -830,7 +931,10 @@ stop_timeout = "100ms"
     )
     .await
     .expect("restart request should succeed");
-    assert!(matches!(response, ControlResponse::Ok));
+    let restarted = match response {
+        ControlResponse::Operation { result } => result,
+        other => panic!("unexpected response: {other:?}"),
+    };
 
     let after = supervisor
         .status(Some("worker"))
@@ -839,6 +943,7 @@ stop_timeout = "100ms"
         .pid
         .expect("pid after");
     assert_ne!(before, after);
+    assert_eq!(restarted.status.pid, Some(after));
     let status = supervisor
         .status(Some("worker"))
         .await

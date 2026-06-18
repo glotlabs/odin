@@ -65,6 +65,7 @@ group = "myapp"
 restart = "always"
 restart_initial_delay = "1s"
 restart_max_delay = "30s"
+startup_timeout = "2s"
 
 stdout_log = "/var/log/supper/my-app.out.log"
 stderr_log = "/var/log/supper/my-app.err.log"
@@ -82,6 +83,12 @@ action = "restart"
 Restart policies are `never`, `on-failure`, and `always`.
 Health check types are `command`, `tcp`, and `http`.
 Health actions are `ignore`, `mark-unready`, and `restart`.
+
+`startup_timeout` controls start/restart acknowledgement. `supper start` and
+`supper restart` return success only after the process remains running through
+that startup window. If it exits early, the command fails and includes current
+status, last exit, and recent events so you do not need to hunt through logs for
+basic startup failures.
 
 `supper monitor` handles `SIGHUP` by reloading the config directory. Reloading:
 

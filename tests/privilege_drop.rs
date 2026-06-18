@@ -19,6 +19,7 @@ fn service_with_user(user: &str, group: Option<&str>) -> ServiceConfig {
         restart_initial_delay: Duration::from_secs(1),
         restart_max_delay: Duration::from_secs(1),
         stop_timeout: Duration::from_secs(1),
+        startup_timeout: Duration::from_secs(1),
         stdout_log: None,
         stderr_log: None,
         healthcheck: None,

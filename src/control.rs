@@ -6,7 +6,7 @@ use tokio::net::{UnixListener, UnixStream};
 
 use crate::error::{Result, SupperError};
 use crate::status::ServiceStatus;
-use crate::supervisor::{ReloadSummary, SupervisorHandle};
+use crate::supervisor::{OperationResult, ReloadSummary, SupervisorHandle};
 
 pub const CONTROL_VERSION: u16 = 1;
 
@@ -39,6 +39,7 @@ pub struct ControlResponseEnvelope {
 pub enum ControlResponse {
     Status { services: Vec<ServiceStatus> },
     Reload { summary: ReloadSummary },
+    Operation { result: OperationResult },
     Ok,
     Error { error: ControlError },
 }
@@ -47,6 +48,7 @@ pub enum ControlResponse {
 pub struct ControlError {
     pub code: String,
     pub message: String,
+    pub status: Option<ServiceStatus>,
 }
 
 pub async fn serve(path: &Path, config_dir: PathBuf, supervisor: SupervisorHandle) -> Result<()> {
@@ -111,6 +113,7 @@ async fn handle_connection(
             error: ControlError {
                 code: "unsupported-version".to_string(),
                 message: format!("unsupported control request version: {}", envelope.version),
+                status: None,
             },
         }
     };
@@ -142,17 +145,30 @@ async fn dispatch(
                 .map(|summary| ControlResponse::Reload { summary }),
             Err(err) => Err(err),
         },
-        ControlRequest::Start { service } => supervisor
-            .start(&service)
-            .await
-            .map(|_| ControlResponse::Ok),
-        ControlRequest::Stop { service } => {
-            supervisor.stop(&service).await.map(|_| ControlResponse::Ok)
+        ControlRequest::Start { service } => {
+            return operation_response(
+                supervisor.clone(),
+                &service,
+                supervisor.start(&service).await,
+            )
+            .await;
         }
-        ControlRequest::Restart { service } => supervisor
-            .restart(&service)
-            .await
-            .map(|_| ControlResponse::Ok),
+        ControlRequest::Stop { service } => {
+            return operation_response(
+                supervisor.clone(),
+                &service,
+                supervisor.stop(&service).await,
+            )
+            .await;
+        }
+        ControlRequest::Restart { service } => {
+            return operation_response(
+                supervisor.clone(),
+                &service,
+                supervisor.restart(&service).await,
+            )
+            .await;
+        }
     };
     match result {
         Ok(response) => response,
@@ -160,8 +176,33 @@ async fn dispatch(
             error: ControlError {
                 code: error_code(&err).to_string(),
                 message: err.to_string(),
+                status: None,
             },
         },
+    }
+}
+
+async fn operation_response(
+    supervisor: SupervisorHandle,
+    service: &str,
+    result: Result<OperationResult>,
+) -> ControlResponse {
+    match result {
+        Ok(result) => ControlResponse::Operation { result },
+        Err(err) => {
+            let status = supervisor
+                .status(Some(service))
+                .await
+                .ok()
+                .and_then(|mut statuses| statuses.pop());
+            ControlResponse::Error {
+                error: ControlError {
+                    code: error_code(&err).to_string(),
+                    message: err.to_string(),
+                    status,
+                },
+            }
+        }
     }
 }
 

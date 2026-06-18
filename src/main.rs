@@ -172,7 +172,9 @@ async fn reload(socket: &std::path::Path, json: bool) -> Result<()> {
             "{}: {}",
             error.code, error.message
         ))),
-        ControlResponse::Status { .. } | ControlResponse::Ok => Err(SupperError::Protocol(
+        ControlResponse::Status { .. }
+        | ControlResponse::Ok
+        | ControlResponse::Operation { .. } => Err(SupperError::Protocol(
             "unexpected control response".to_string(),
         )),
     }
@@ -218,7 +220,9 @@ async fn print_status(socket: &std::path::Path, service: Option<String>, json: b
             "{}: {}",
             error.code, error.message
         ))),
-        ControlResponse::Ok | ControlResponse::Reload { .. } => Err(SupperError::Protocol(
+        ControlResponse::Ok
+        | ControlResponse::Reload { .. }
+        | ControlResponse::Operation { .. } => Err(SupperError::Protocol(
             "unexpected control response".to_string(),
         )),
     }
@@ -253,7 +257,9 @@ async fn print_events(socket: &std::path::Path, service: &str, json: bool) -> Re
             "{}: {}",
             error.code, error.message
         ))),
-        ControlResponse::Ok | ControlResponse::Reload { .. } => Err(SupperError::Protocol(
+        ControlResponse::Ok
+        | ControlResponse::Reload { .. }
+        | ControlResponse::Operation { .. } => Err(SupperError::Protocol(
             "unexpected control response".to_string(),
         )),
     }
@@ -273,13 +279,60 @@ fn print_event_table(events: &[ServiceEvent]) {
 
 async fn command_ok(socket: &std::path::Path, request: ControlRequest) -> Result<()> {
     match control::request(socket, request).await? {
+        ControlResponse::Operation { result } => {
+            println!(
+                "{}: {} ({:?}, pid={})",
+                result.service,
+                result.message,
+                result.status.state,
+                result
+                    .status
+                    .pid
+                    .map(|pid| pid.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            );
+            if let Some(last_exit) = result.status.last_exit {
+                println!("last exit: {last_exit}");
+            }
+            Ok(())
+        }
         ControlResponse::Ok => Ok(()),
-        ControlResponse::Error { error } => Err(SupperError::Protocol(format!(
-            "{}: {}",
-            error.code, error.message
-        ))),
+        ControlResponse::Error { error } => {
+            print_control_error_details(&error);
+            Err(SupperError::Protocol(format!(
+                "{}: {}",
+                error.code, error.message
+            )))
+        }
         ControlResponse::Status { .. } | ControlResponse::Reload { .. } => Err(
             SupperError::Protocol("unexpected control response".to_string()),
         ),
+    }
+}
+
+fn print_control_error_details(error: &supper::control::ControlError) {
+    let Some(status) = &error.status else {
+        return;
+    };
+    eprintln!(
+        "{}: state={:?}, pid={}, restarts={}",
+        status.name,
+        status.state,
+        status
+            .pid
+            .map(|pid| pid.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        status.restart_count
+    );
+    if let Some(last_exit) = &status.last_exit {
+        eprintln!("last exit: {last_exit}");
+    }
+    let event_count = status.event_history.len();
+    let start = event_count.saturating_sub(5);
+    for event in &status.event_history[start..] {
+        eprintln!(
+            "event: {} {:?}: {}",
+            event.at_unix_seconds, event.kind, event.message
+        );
     }
 }

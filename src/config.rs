@@ -30,6 +30,10 @@ fn default_stop_timeout() -> Duration {
     Duration::from_secs(10)
 }
 
+fn default_startup_timeout() -> Duration {
+    Duration::from_secs(2)
+}
+
 fn default_health_interval() -> Duration {
     Duration::from_secs(30)
 }
@@ -84,6 +88,8 @@ pub struct ServiceConfig {
     pub restart_max_delay: Duration,
     #[serde(default = "default_stop_timeout", with = "humantime_serde")]
     pub stop_timeout: Duration,
+    #[serde(default = "default_startup_timeout", with = "humantime_serde")]
+    pub startup_timeout: Duration,
     pub stdout_log: Option<PathBuf>,
     pub stderr_log: Option<PathBuf>,
     pub healthcheck: Option<HealthCheckConfig>,
@@ -212,6 +218,7 @@ pub fn derive_service_config(name: &str) -> ServiceConfig {
         restart_initial_delay: default_initial_delay(),
         restart_max_delay: default_max_delay(),
         stop_timeout: default_stop_timeout(),
+        startup_timeout: default_startup_timeout(),
         stdout_log: Some(PathBuf::from(format!("/var/log/supper/{name}.out.log"))),
         stderr_log: Some(PathBuf::from(format!("/var/log/supper/{name}.err.log"))),
         healthcheck: None,

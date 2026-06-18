@@ -73,7 +73,7 @@ pub struct ServiceEvent {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceStatus {
     pub name: String,
     pub state: ServiceState,
