@@ -704,9 +704,10 @@ autostart = false
     let supervisor = SupervisorHandle::new(vec![service]);
     let server_supervisor = supervisor.clone();
     let server_socket = socket.clone();
+    let server_config_dir = dir.clone();
 
     let server = tokio::spawn(async move {
-        let _ = supper::control::serve(&server_socket, server_supervisor).await;
+        let _ = supper::control::serve(&server_socket, server_config_dir, server_supervisor).await;
     });
 
     for _ in 0..100 {
@@ -728,6 +729,57 @@ autostart = false
         }
         other => panic!("unexpected response: {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn control_reload_loads_new_service_from_config_dir() {
+    let dir = temp_dir("control-reload");
+    let socket = dir.join("supper.sock");
+    let supervisor = SupervisorHandle::new(Vec::new());
+    let server_supervisor = supervisor.clone();
+    let server_socket = socket.clone();
+    let server_config_dir = dir.clone();
+
+    let server = tokio::spawn(async move {
+        let _ = supper::control::serve(&server_socket, server_config_dir, server_supervisor).await;
+    });
+
+    for _ in 0..100 {
+        if UnixStream::connect(&socket).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    write_service(
+        &dir,
+        "added",
+        r#"
+name = "added"
+command = "/bin/sh"
+args = ["-c", "sleep 60"]
+autostart = false
+restart = "never"
+stop_timeout = "100ms"
+"#,
+    );
+
+    let response = supper::control::request(&socket, ControlRequest::Reload)
+        .await
+        .expect("reload request should succeed");
+
+    match response {
+        ControlResponse::Reload { summary } => {
+            assert_eq!(summary.added, vec!["added"]);
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+    assert_eq!(
+        supervisor.status(Some("added")).await.expect("status")[0].name,
+        "added"
+    );
+
+    server.abort();
 }
 
 #[tokio::test]
@@ -758,8 +810,9 @@ stop_timeout = "100ms"
 
     let server_supervisor = supervisor.clone();
     let server_socket = socket.clone();
+    let server_config_dir = dir.clone();
     let server = tokio::spawn(async move {
-        let _ = supper::control::serve(&server_socket, server_supervisor).await;
+        let _ = supper::control::serve(&server_socket, server_config_dir, server_supervisor).await;
     });
 
     for _ in 0..100 {

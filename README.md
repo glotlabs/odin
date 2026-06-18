@@ -30,6 +30,8 @@ supper --json events my-app
 supper add my-app
 supper validate
 supper --json validate
+supper reload
+supper --json reload
 supper start my-app
 supper stop my-app
 supper restart my-app
@@ -88,6 +90,15 @@ Health actions are `ignore`, `mark-unready`, and `restart`.
 - restarts running services when process-affecting fields change
 - stops and removes services deleted from the config directory
 - keeps already-running services running when their config still exists
+
+You can also trigger the same reload over the control socket:
+
+```sh
+supper reload
+```
+
+That is the preferred form for deploy scripts and CI jobs because it does not
+require finding the monitor PID or using rc.d-specific commands.
 
 Process-affecting fields are `command`, `args`, `cwd`, `env`, `user`, `group`,
 `umask`, `stdout_log`, and `stderr_log`. Restart policy, restart delays, stop

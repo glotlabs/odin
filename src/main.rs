@@ -29,6 +29,7 @@ enum Command {
     Monitor,
     Add { name: String },
     Validate,
+    Reload,
     List,
     Status { service: Option<String> },
     Events { service: String },
@@ -45,6 +46,7 @@ async fn main() -> Result<()> {
         Command::Monitor => monitor(cli.config_dir, cli.socket).await,
         Command::Add { name } => add(cli.config_dir, &name, cli.json),
         Command::Validate => validate(cli.config_dir, cli.json),
+        Command::Reload => reload(&cli.socket, cli.json).await,
         Command::List => print_status(&cli.socket, None, cli.json).await,
         Command::Status { service } => print_status(&cli.socket, service, cli.json).await,
         Command::Events { service } => print_events(&cli.socket, &service, cli.json).await,
@@ -103,8 +105,11 @@ async fn monitor(config_dir: PathBuf, socket: PathBuf) -> Result<()> {
 
     let control_supervisor = supervisor.clone();
     let control_socket = socket.clone();
+    let control_config_dir = config_dir.clone();
     tokio::spawn(async move {
-        if let Err(err) = control::serve(&control_socket, control_supervisor).await {
+        if let Err(err) =
+            control::serve(&control_socket, control_config_dir, control_supervisor).await
+        {
             tracing::error!("control API failed: {err}");
         }
     });
@@ -140,6 +145,37 @@ async fn monitor(config_dir: PathBuf, socket: PathBuf) -> Result<()> {
         std::fs::remove_file(socket)?;
     }
     Ok(())
+}
+
+async fn reload(socket: &std::path::Path, json: bool) -> Result<()> {
+    let response = control::request(socket, ControlRequest::Reload).await?;
+    match response {
+        ControlResponse::Reload { summary } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&summary)
+                        .map_err(|err| SupperError::Protocol(err.to_string()))?
+                );
+            } else {
+                println!(
+                    "reloaded: added={}, live-updated={}, restarted={}, removed={}",
+                    summary.added.len(),
+                    summary.live_updated.len(),
+                    summary.restarted.len(),
+                    summary.removed.len()
+                );
+            }
+            Ok(())
+        }
+        ControlResponse::Error { error } => Err(SupperError::Protocol(format!(
+            "{}: {}",
+            error.code, error.message
+        ))),
+        ControlResponse::Status { .. } | ControlResponse::Ok => Err(SupperError::Protocol(
+            "unexpected control response".to_string(),
+        )),
+    }
 }
 
 async fn print_status(socket: &std::path::Path, service: Option<String>, json: bool) -> Result<()> {
@@ -182,7 +218,7 @@ async fn print_status(socket: &std::path::Path, service: Option<String>, json: b
             "{}: {}",
             error.code, error.message
         ))),
-        ControlResponse::Ok => Err(SupperError::Protocol(
+        ControlResponse::Ok | ControlResponse::Reload { .. } => Err(SupperError::Protocol(
             "unexpected control response".to_string(),
         )),
     }
@@ -217,7 +253,7 @@ async fn print_events(socket: &std::path::Path, service: &str, json: bool) -> Re
             "{}: {}",
             error.code, error.message
         ))),
-        ControlResponse::Ok => Err(SupperError::Protocol(
+        ControlResponse::Ok | ControlResponse::Reload { .. } => Err(SupperError::Protocol(
             "unexpected control response".to_string(),
         )),
     }
@@ -242,8 +278,8 @@ async fn command_ok(socket: &std::path::Path, request: ControlRequest) -> Result
             "{}: {}",
             error.code, error.message
         ))),
-        ControlResponse::Status { .. } => Err(SupperError::Protocol(
-            "unexpected control response".to_string(),
-        )),
+        ControlResponse::Status { .. } | ControlResponse::Reload { .. } => Err(
+            SupperError::Protocol("unexpected control response".to_string()),
+        ),
     }
 }

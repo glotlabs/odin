@@ -16,7 +16,7 @@ use crate::status::{
     ServiceStatus, now_unix_seconds,
 };
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReloadSummary {
     pub added: Vec<String>,
     pub live_updated: Vec<String>,

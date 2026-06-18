@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -6,7 +6,7 @@ use tokio::net::{UnixListener, UnixStream};
 
 use crate::error::{Result, SupperError};
 use crate::status::ServiceStatus;
-use crate::supervisor::SupervisorHandle;
+use crate::supervisor::{ReloadSummary, SupervisorHandle};
 
 pub const CONTROL_VERSION: u16 = 1;
 
@@ -21,6 +21,7 @@ pub struct ControlEnvelope {
 #[serde(tag = "command", rename_all = "kebab-case")]
 pub enum ControlRequest {
     Status { service: Option<String> },
+    Reload,
     Start { service: String },
     Stop { service: String },
     Restart { service: String },
@@ -37,6 +38,7 @@ pub struct ControlResponseEnvelope {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ControlResponse {
     Status { services: Vec<ServiceStatus> },
+    Reload { summary: ReloadSummary },
     Ok,
     Error { error: ControlError },
 }
@@ -47,7 +49,7 @@ pub struct ControlError {
     pub message: String,
 }
 
-pub async fn serve(path: &Path, supervisor: SupervisorHandle) -> Result<()> {
+pub async fn serve(path: &Path, config_dir: PathBuf, supervisor: SupervisorHandle) -> Result<()> {
     if path.exists() {
         std::fs::remove_file(path)?;
     }
@@ -59,8 +61,9 @@ pub async fn serve(path: &Path, supervisor: SupervisorHandle) -> Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let supervisor = supervisor.clone();
+        let config_dir = config_dir.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle_connection(stream, supervisor).await {
+            if let Err(err) = handle_connection(stream, &config_dir, supervisor).await {
                 tracing::warn!("control connection failed: {err}");
             }
         });
@@ -91,14 +94,18 @@ pub async fn request(path: &Path, request: ControlRequest) -> Result<ControlResp
     Ok(envelope.response)
 }
 
-async fn handle_connection(stream: UnixStream, supervisor: SupervisorHandle) -> Result<()> {
+async fn handle_connection(
+    stream: UnixStream,
+    config_dir: &Path,
+    supervisor: SupervisorHandle,
+) -> Result<()> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).await?;
     let envelope: ControlEnvelope =
         serde_json::from_str(&line).map_err(|err| SupperError::Protocol(err.to_string()))?;
     let response = if envelope.version == CONTROL_VERSION {
-        dispatch(envelope.request, supervisor).await
+        dispatch(envelope.request, config_dir, supervisor).await
     } else {
         ControlResponse::Error {
             error: ControlError {
@@ -118,12 +125,23 @@ async fn handle_connection(stream: UnixStream, supervisor: SupervisorHandle) -> 
     Ok(())
 }
 
-async fn dispatch(request: ControlRequest, supervisor: SupervisorHandle) -> ControlResponse {
+async fn dispatch(
+    request: ControlRequest,
+    config_dir: &Path,
+    supervisor: SupervisorHandle,
+) -> ControlResponse {
     let result = match request {
         ControlRequest::Status { service } => supervisor
             .status(service.as_deref())
             .await
             .map(|services| ControlResponse::Status { services }),
+        ControlRequest::Reload => match crate::config::load_services(config_dir) {
+            Ok(services) => supervisor
+                .reload(services)
+                .await
+                .map(|summary| ControlResponse::Reload { summary }),
+            Err(err) => Err(err),
+        },
         ControlRequest::Start { service } => supervisor
             .start(&service)
             .await
