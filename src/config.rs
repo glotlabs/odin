@@ -60,7 +60,7 @@ pub enum HealthAction {
     Restart,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceConfig {
     pub name: String,
     pub command: PathBuf,
@@ -87,7 +87,7 @@ pub struct ServiceConfig {
     pub healthcheck: Option<HealthCheckConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HealthCheckConfig {
     #[serde(rename = "type")]
     pub kind: HealthCheckKind,
@@ -99,6 +99,8 @@ pub struct HealthCheckConfig {
     pub url: Option<String>,
     #[serde(default = "default_health_interval", with = "humantime_serde")]
     pub interval: Duration,
+    #[serde(default, with = "humantime_serde")]
+    pub startup_grace: Duration,
     #[serde(default = "default_health_timeout", with = "humantime_serde")]
     pub timeout: Duration,
     #[serde(default = "default_health_retries")]
@@ -164,6 +166,13 @@ fn validate_service(path: &Path, service: &ServiceConfig) -> Result<()> {
     if service.command.as_os_str().is_empty() {
         return Err(invalid("command must not be empty"));
     }
+    if let Some(mask) = service.umask
+        && mask > 0o777
+    {
+        return Err(invalid(
+            "umask must be an octal permission mask no larger than 0777",
+        ));
+    }
     if service.restart_initial_delay > service.restart_max_delay {
         return Err(invalid(
             "restart_initial_delay must be less than or equal to restart_max_delay",
@@ -171,6 +180,9 @@ fn validate_service(path: &Path, service: &ServiceConfig) -> Result<()> {
     }
 
     if let Some(health) = &service.healthcheck {
+        if health.retries == 0 {
+            return Err(invalid("healthcheck retries must be greater than zero"));
+        }
         match health.kind {
             HealthCheckKind::Command if health.command.is_none() => {
                 return Err(invalid("command healthcheck requires command"));

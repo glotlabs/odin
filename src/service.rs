@@ -1,9 +1,10 @@
 use std::time::{Duration, Instant};
 
+use tokio::sync::oneshot;
+
 use crate::config::{RestartPolicy, ServiceConfig};
 use crate::status::{HealthStatus, ServiceState, ServiceStatus};
 
-#[derive(Debug)]
 pub struct ServiceRuntime {
     pub config: ServiceConfig,
     pub state: ServiceState,
@@ -16,6 +17,7 @@ pub struct ServiceRuntime {
     pub current_backoff: Duration,
     pub health: HealthStatus,
     pub health_failures: u32,
+    pub stop_waiters: Vec<oneshot::Sender<()>>,
 }
 
 impl ServiceRuntime {
@@ -34,6 +36,7 @@ impl ServiceRuntime {
             current_backoff,
             health: HealthStatus::Unknown,
             health_failures: 0,
+            stop_waiters: Vec::new(),
         }
     }
 
@@ -69,5 +72,11 @@ impl ServiceRuntime {
 
     pub fn reset_backoff(&mut self) {
         self.current_backoff = self.config.restart_initial_delay;
+    }
+
+    pub fn notify_stopped(&mut self) {
+        for waiter in self.stop_waiters.drain(..) {
+            let _ = waiter.send(());
+        }
     }
 }

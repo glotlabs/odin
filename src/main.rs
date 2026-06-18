@@ -17,6 +17,8 @@ struct Cli {
     config_dir: PathBuf,
     #[arg(long, default_value = DEFAULT_SOCKET, global = true)]
     socket: PathBuf,
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -37,8 +39,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Monitor) {
         Command::Monitor => monitor(cli.config_dir, cli.socket).await,
-        Command::List => print_status(&cli.socket, None).await,
-        Command::Status { service } => print_status(&cli.socket, service).await,
+        Command::List => print_status(&cli.socket, None, cli.json).await,
+        Command::Status { service } => print_status(&cli.socket, service, cli.json).await,
         Command::Start { service } => {
             command_ok(&cli.socket, ControlRequest::Start { service }).await
         }
@@ -75,7 +77,20 @@ async fn monitor(config_dir: PathBuf, socket: PathBuf) -> Result<()> {
         tokio::select! {
             _ = sigint.recv() => break,
             _ = sigterm.recv() => break,
-            _ = sighup.recv() => tracing::info!("SIGHUP received; config reload is not implemented yet"),
+            _ = sighup.recv() => {
+                match config::load_services(&config_dir) {
+                    Ok(services) => match supervisor.reload(services).await {
+                        Ok(summary) => tracing::info!(
+                            added = ?summary.added,
+                            updated = ?summary.updated,
+                            removed = ?summary.removed,
+                            "configuration reloaded"
+                        ),
+                        Err(err) => tracing::error!("configuration reload failed: {err}"),
+                    },
+                    Err(err) => tracing::error!("configuration reload failed: {err}"),
+                }
+            },
         }
     }
 
@@ -86,15 +101,27 @@ async fn monitor(config_dir: PathBuf, socket: PathBuf) -> Result<()> {
     Ok(())
 }
 
-async fn print_status(socket: &std::path::Path, service: Option<String>) -> Result<()> {
+async fn print_status(socket: &std::path::Path, service: Option<String>, json: bool) -> Result<()> {
     let response = control::request(socket, ControlRequest::Status { service }).await?;
     match response {
         ControlResponse::Status { services } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&services)
+                        .map_err(|err| SupperError::Protocol(err.to_string()))?
+                );
+                return Ok(());
+            }
+            println!(
+                "{:<24} {:<12} {:<8} {:<8} HEALTH",
+                "NAME", "STATE", "PID", "RESTARTS"
+            );
             for service in services {
                 println!(
-                    "{}\t{:?}\tpid={}\trestarts={}\thealth={:?}",
+                    "{:<24} {:<12} {:<8} {:<8} {:?}",
                     service.name,
-                    service.state,
+                    format!("{:?}", service.state),
                     service
                         .pid
                         .map(|pid| pid.to_string())
@@ -105,7 +132,10 @@ async fn print_status(socket: &std::path::Path, service: Option<String>) -> Resu
             }
             Ok(())
         }
-        ControlResponse::Error { message } => Err(SupperError::Protocol(message)),
+        ControlResponse::Error { error } => Err(SupperError::Protocol(format!(
+            "{}: {}",
+            error.code, error.message
+        ))),
         ControlResponse::Ok => Err(SupperError::Protocol(
             "unexpected control response".to_string(),
         )),
@@ -115,7 +145,10 @@ async fn print_status(socket: &std::path::Path, service: Option<String>) -> Resu
 async fn command_ok(socket: &std::path::Path, request: ControlRequest) -> Result<()> {
     match control::request(socket, request).await? {
         ControlResponse::Ok => Ok(()),
-        ControlResponse::Error { message } => Err(SupperError::Protocol(message)),
+        ControlResponse::Error { error } => Err(SupperError::Protocol(format!(
+            "{}: {}",
+            error.code, error.message
+        ))),
         ControlResponse::Status { .. } => Err(SupperError::Protocol(
             "unexpected control response".to_string(),
         )),

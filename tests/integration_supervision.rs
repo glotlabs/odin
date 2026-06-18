@@ -2,10 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use supper::config::{self, RestartPolicy};
+use supper::config::{self, HealthAction, HealthCheckConfig, HealthCheckKind, RestartPolicy};
 use supper::control::{ControlRequest, ControlResponse};
 use supper::status::ServiceState;
 use supper::supervisor::SupervisorHandle;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, UnixStream};
 
 fn temp_dir(name: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -184,6 +186,144 @@ restart_max_delay = "100ms"
 }
 
 #[tokio::test]
+async fn reload_adds_autostart_service() {
+    let dir = temp_dir("reload-add");
+    let path = write_service(
+        &dir,
+        "added",
+        r#"
+name = "added"
+command = "/bin/sh"
+args = ["-c", "sleep 60"]
+autostart = true
+restart = "never"
+stop_timeout = "100ms"
+"#,
+    );
+    let service = config::load_service(&path).expect("service config should load");
+    let supervisor = SupervisorHandle::new(Vec::new());
+
+    let summary = supervisor.reload(vec![service]).await.expect("reload");
+    assert_eq!(summary.added, vec!["added"]);
+    let statuses = supervisor.status(Some("added")).await.expect("status");
+    assert_eq!(statuses[0].state, ServiceState::Running);
+
+    supervisor.stop("added").await.expect("stop");
+}
+
+#[tokio::test]
+async fn reload_removes_running_service() {
+    let dir = temp_dir("reload-remove");
+    let path = write_service(
+        &dir,
+        "gone",
+        r#"
+name = "gone"
+command = "/bin/sh"
+args = ["-c", "sleep 60"]
+autostart = false
+restart = "never"
+stop_timeout = "100ms"
+"#,
+    );
+    let service = config::load_service(&path).expect("service config should load");
+    let supervisor = SupervisorHandle::new(vec![service]);
+
+    supervisor.start("gone").await.expect("start");
+    let summary = supervisor.reload(Vec::new()).await.expect("reload");
+
+    assert_eq!(summary.removed, vec!["gone"]);
+    assert!(supervisor.status(Some("gone")).await.is_err());
+}
+
+#[tokio::test]
+async fn command_health_check_success_and_timeout() {
+    let ok = HealthCheckConfig {
+        kind: HealthCheckKind::Command,
+        command: Some("/bin/sh".into()),
+        args: vec!["-c".to_string(), "exit 0".to_string()],
+        host: None,
+        port: None,
+        url: None,
+        interval: Duration::from_secs(1),
+        startup_grace: Duration::ZERO,
+        timeout: Duration::from_secs(1),
+        retries: 1,
+        action: HealthAction::Restart,
+    };
+    supper::health::check(&ok).await.expect("healthy command");
+
+    let timeout = HealthCheckConfig {
+        args: vec!["-c".to_string(), "sleep 5".to_string()],
+        timeout: Duration::from_millis(50),
+        ..ok
+    };
+    let err = supper::health::check(&timeout)
+        .await
+        .expect_err("timeout should fail");
+    assert!(err.to_string().contains("timed out"));
+}
+
+#[tokio::test]
+async fn tcp_health_check_success() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind tcp");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = tokio::spawn(async move {
+        let _ = listener.accept().await;
+    });
+    let check = HealthCheckConfig {
+        kind: HealthCheckKind::Tcp,
+        command: None,
+        args: Vec::new(),
+        host: Some("127.0.0.1".to_string()),
+        port: Some(port),
+        url: None,
+        interval: Duration::from_secs(1),
+        startup_grace: Duration::ZERO,
+        timeout: Duration::from_secs(1),
+        retries: 1,
+        action: HealthAction::Restart,
+    };
+
+    supper::health::check(&check).await.expect("tcp healthy");
+    server.await.expect("server task");
+}
+
+#[tokio::test]
+async fn http_health_check_success() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind http");
+    let url = format!(
+        "http://{}/health",
+        listener.local_addr().expect("local addr")
+    );
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept");
+        let mut buf = [0_u8; 1024];
+        let _ = stream.read(&mut buf).await;
+        stream
+            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write response");
+    });
+    let check = HealthCheckConfig {
+        kind: HealthCheckKind::Http,
+        command: None,
+        args: Vec::new(),
+        host: None,
+        port: None,
+        url: Some(url),
+        interval: Duration::from_secs(1),
+        startup_grace: Duration::ZERO,
+        timeout: Duration::from_secs(1),
+        retries: 1,
+        action: HealthAction::Restart,
+    };
+
+    supper::health::check(&check).await.expect("http healthy");
+    server.await.expect("server task");
+}
+
+#[tokio::test]
 async fn control_status_round_trips_over_unix_socket() {
     let dir = temp_dir("control");
     let socket = dir.join("supper.sock");
@@ -205,8 +345,8 @@ autostart = false
         let _ = supper::control::serve(&server_socket, server_supervisor).await;
     });
 
-    for _ in 0..50 {
-        if socket.exists() {
+    for _ in 0..100 {
+        if UnixStream::connect(&socket).await.is_ok() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -224,4 +364,65 @@ autostart = false
         }
         other => panic!("unexpected response: {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn control_restart_restarts_service() {
+    let dir = temp_dir("control-restart");
+    let socket = dir.join("supper.sock");
+    let path = write_service(
+        &dir,
+        "worker",
+        r#"
+name = "worker"
+command = "/bin/sh"
+args = ["-c", "sleep 60"]
+autostart = false
+restart = "never"
+stop_timeout = "100ms"
+"#,
+    );
+    let service = config::load_service(&path).expect("service config should load");
+    let supervisor = SupervisorHandle::new(vec![service]);
+    supervisor.start("worker").await.expect("start");
+    let before = supervisor
+        .status(Some("worker"))
+        .await
+        .expect("status before")[0]
+        .pid
+        .expect("pid before");
+
+    let server_supervisor = supervisor.clone();
+    let server_socket = socket.clone();
+    let server = tokio::spawn(async move {
+        let _ = supper::control::serve(&server_socket, server_supervisor).await;
+    });
+
+    for _ in 0..100 {
+        if UnixStream::connect(&socket).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let response = supper::control::request(
+        &socket,
+        ControlRequest::Restart {
+            service: "worker".to_string(),
+        },
+    )
+    .await
+    .expect("restart request should succeed");
+    assert!(matches!(response, ControlResponse::Ok));
+
+    let after = supervisor
+        .status(Some("worker"))
+        .await
+        .expect("status after")[0]
+        .pid
+        .expect("pid after");
+    assert_ne!(before, after);
+
+    server.abort();
+    supervisor.stop("worker").await.expect("stop");
 }

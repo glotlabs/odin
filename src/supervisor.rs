@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
+use tokio::sync::oneshot;
 use tokio::time;
 
 use crate::child;
@@ -11,6 +12,13 @@ use crate::config::{HealthAction, ServiceConfig};
 use crate::error::{Result, SupperError};
 use crate::service::ServiceRuntime;
 use crate::status::{HealthStatus, ServiceState, ServiceStatus};
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReloadSummary {
+    pub added: Vec<String>,
+    pub updated: Vec<String>,
+    pub removed: Vec<String>,
+}
 
 #[derive(Clone)]
 pub struct SupervisorHandle {
@@ -80,32 +88,41 @@ impl SupervisorHandle {
     }
 
     pub async fn stop(&self, name: &str) -> Result<()> {
-        let (pid, timeout) = {
+        let (pid, timeout, stopped) = {
             let mut services = self.services()?;
             let service = services
                 .get_mut(name)
                 .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?;
             service.desired_running = false;
+            if service.pid.is_none() {
+                service.state = ServiceState::Stopped;
+                service.notify_stopped();
+                return Ok(());
+            }
             service.state = ServiceState::Stopping;
-            (service.pid, service.config.stop_timeout)
+            let (tx, rx) = oneshot::channel();
+            service.stop_waiters.push(tx);
+            (service.pid, service.config.stop_timeout, rx)
         };
 
-        let pid = pid.ok_or_else(|| SupperError::NotRunning(name.to_string()))?;
-        terminate_process_group(pid, timeout).await;
+        let Some(pid) = pid else {
+            return Ok(());
+        };
+        terminate_process_group(pid, timeout, stopped).await;
         Ok(())
     }
 
     pub async fn restart(&self, name: &str) -> Result<()> {
-        let _ = self.stop(name).await;
-        let timeout = {
+        let exists_and_running = {
             let services = self.services()?;
-            services
+            let service = services
                 .get(name)
-                .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?
-                .config
-                .stop_timeout
+                .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?;
+            service.pid.is_some()
         };
-        time::sleep(timeout.min(Duration::from_secs(1))).await;
+        if exists_and_running {
+            self.stop(name).await?;
+        }
         self.start(name).await
     }
 
@@ -119,6 +136,74 @@ impl SupervisorHandle {
         for name in names {
             let _ = self.stop(&name).await;
         }
+    }
+
+    pub async fn reload(&self, new_configs: Vec<ServiceConfig>) -> Result<ReloadSummary> {
+        let new_by_name = new_configs
+            .into_iter()
+            .map(|config| (config.name.clone(), config))
+            .collect::<BTreeMap<_, _>>();
+        let (removed_running, summary) = {
+            let mut services = self.services()?;
+            let mut summary = ReloadSummary::default();
+
+            for (name, config) in &new_by_name {
+                match services.get_mut(name) {
+                    Some(service) if service.config != *config => {
+                        service.config = config.clone();
+                        service.desired_running = config.autostart || service.pid.is_some();
+                        service.reset_backoff();
+                        summary.updated.push(name.clone());
+                    }
+                    Some(_) => {}
+                    None => {
+                        services.insert(name.clone(), ServiceRuntime::new(config.clone()));
+                        summary.added.push(name.clone());
+                    }
+                }
+            }
+
+            let existing_names = services.keys().cloned().collect::<Vec<_>>();
+            let mut removed_running = Vec::new();
+            for name in existing_names {
+                if new_by_name.contains_key(&name) {
+                    continue;
+                }
+                let Some(service) = services.get_mut(&name) else {
+                    continue;
+                };
+                service.desired_running = false;
+                summary.removed.push(name.clone());
+                if service.pid.is_some() {
+                    removed_running.push(name);
+                } else {
+                    services.remove(&name);
+                }
+            }
+
+            (removed_running, summary)
+        };
+
+        for name in removed_running {
+            let _ = self.stop(&name).await;
+            let mut services = self.services()?;
+            services.remove(&name);
+        }
+
+        for name in &summary.added {
+            let autostart = {
+                let services = self.services()?;
+                services
+                    .get(name)
+                    .map(|service| service.config.autostart)
+                    .unwrap_or(false)
+            };
+            if autostart {
+                self.start(name).await?;
+            }
+        }
+
+        Ok(summary)
     }
 
     fn spawn_and_track(&self, config: ServiceConfig, count_restart: bool) -> Result<()> {
@@ -186,6 +271,7 @@ impl SupervisorHandle {
             service.pid = None;
             service.started_at = None;
             service.last_exit = Some(message);
+            service.notify_stopped();
             if !service.desired_running {
                 service.state = ServiceState::Stopped;
                 return;
@@ -217,16 +303,15 @@ impl SupervisorHandle {
                         .map(|service| service.desired_running)
                         .unwrap_or(false)
                 };
-                if desired {
-                    if let Err(err) = self.spawn_and_track(config, true) {
-                        tracing::error!("failed to restart {name}: {err}");
-                    }
+                if desired && let Err(err) = self.spawn_and_track(config, true) {
+                    tracing::error!("failed to restart {name}: {err}");
                 }
             }
         }
     }
 
     async fn health_loop(&self, name: String, generation: u64) {
+        let mut first_check = true;
         loop {
             let config = {
                 let Ok(services) = self.services() else {
@@ -246,6 +331,10 @@ impl SupervisorHandle {
             let Some(config) = config else {
                 return;
             };
+            if first_check && !config.startup_grace.is_zero() {
+                time::sleep(config.startup_grace).await;
+            }
+            first_check = false;
             time::sleep(config.interval).await;
             let result = crate::health::check(&config).await;
             let mut restart = false;
@@ -295,15 +384,11 @@ impl SupervisorHandle {
     }
 }
 
-async fn terminate_process_group(pid: u32, timeout: Duration) {
+async fn terminate_process_group(pid: u32, timeout: Duration, stopped: oneshot::Receiver<()>) {
     let pgid = Pid::from_raw(pid as i32);
     let _ = killpg(pgid, Signal::SIGTERM);
-    let deadline = time::Instant::now() + timeout;
-    while time::Instant::now() < deadline {
-        if !process_group_exists(pgid) {
-            return;
-        }
-        time::sleep(Duration::from_millis(25)).await;
+    if time::timeout(timeout, stopped).await.is_ok() {
+        return;
     }
     if process_group_exists(pgid) {
         let _ = killpg(pgid, Signal::SIGKILL);
