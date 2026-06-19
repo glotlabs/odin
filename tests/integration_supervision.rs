@@ -13,7 +13,7 @@ use odin::status::{
     MAX_EVENT_HISTORY, MAX_RESTART_HISTORY, RestartHistoryEntry, RestartReason, ServiceEventKind,
     ServiceState,
 };
-use odin::supervisor::SupervisorHandle;
+use odin::supervisor::{OperationAction, OperationPhase, SupervisorHandle};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixStream};
 
@@ -1200,7 +1200,7 @@ restart_max_delay = "1s"
     match response {
         ControlResponse::Error { error } => {
             assert_eq!(error.code, "invalid-config");
-            let diagnostics = error.diagnostics.expect("config diagnostics");
+            let diagnostics = error.config_diagnostics.expect("config diagnostics");
             let delay = diagnostics
                 .iter()
                 .find(|diagnostic| diagnostic.field.as_deref() == Some("restart_initial_delay"))
@@ -1258,7 +1258,22 @@ startup_timeout = "100ms"
 
     match response {
         ControlResponse::Error { error } => {
-            assert_eq!(error.code, "protocol");
+            assert_eq!(error.code, "operation-failed");
+            let operation = error
+                .operation
+                .as_ref()
+                .expect("operation diagnostic should be included");
+            assert_eq!(operation.service, "bad-start");
+            assert_eq!(operation.action, OperationAction::Start);
+            assert_eq!(operation.phase, OperationPhase::Startup);
+            assert_eq!(operation.timeout_millis, Some(100));
+            assert!(operation.message.contains("failed startup"));
+            assert!(
+                operation
+                    .recent_events
+                    .iter()
+                    .any(|event| event.kind == ServiceEventKind::Exited)
+            );
             let status = error.status.expect("operation error should include status");
             assert_eq!(status.state, ServiceState::Failed);
             assert!(status.last_exit.as_deref().unwrap_or("").contains("42"));
@@ -1268,6 +1283,217 @@ startup_timeout = "100ms"
                     .iter()
                     .any(|event| event.kind == ServiceEventKind::Exited)
             );
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn start_cli_json_reports_operation_error() {
+    let dir = temp_dir("start-json-operation");
+    let socket = dir.join("odin.sock");
+    let path = write_service(
+        &dir,
+        "bad-start",
+        r#"
+name = "bad-start"
+command = "/bin/sh"
+args = ["-c", "exit 42"]
+autostart = false
+restart = "never"
+startup_timeout = "100ms"
+"#,
+    );
+    let service = config::load_service(&path).expect("service config should load");
+    let supervisor = SupervisorHandle::new(vec![service]);
+    let server_supervisor = supervisor.clone();
+    let server_socket = socket.clone();
+    let server_config_dir = dir.clone();
+    let server = tokio::spawn(async move {
+        let _ = odin::control::serve(&server_socket, server_config_dir, server_supervisor).await;
+    });
+
+    for _ in 0..100 {
+        if UnixStream::connect(&socket).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_odin"))
+        .arg("--socket")
+        .arg(&socket)
+        .arg("--json")
+        .arg("start")
+        .arg("bad-start")
+        .output()
+        .await
+        .expect("run odin start");
+
+    assert!(!output.status.success());
+    assert!(output.stderr.is_empty());
+    let payload: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("start JSON error");
+    assert_eq!(payload["code"], "operation-failed");
+    assert_eq!(payload["operation"]["service"], "bad-start");
+    assert_eq!(payload["operation"]["action"], "start");
+    assert_eq!(payload["operation"]["phase"], "startup");
+    assert_eq!(payload["operation"]["timeout_millis"], 100);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn reload_cli_json_reports_config_diagnostics() {
+    let dir = temp_dir("reload-json-diagnostics");
+    let socket = dir.join("odin.sock");
+    let supervisor = SupervisorHandle::new(Vec::new());
+    let server_supervisor = supervisor.clone();
+    let server_socket = socket.clone();
+    let server_config_dir = dir.clone();
+    let server = tokio::spawn(async move {
+        let _ = odin::control::serve(&server_socket, server_config_dir, server_supervisor).await;
+    });
+
+    for _ in 0..100 {
+        if UnixStream::connect(&socket).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    write_service(
+        &dir,
+        "bad-reload",
+        r#"
+name = "bad-reload"
+command = "/bin/sh"
+restart_initial_delay = "10s"
+restart_max_delay = "1s"
+"#,
+    );
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_odin"))
+        .arg("--socket")
+        .arg(&socket)
+        .arg("--json")
+        .arg("reload")
+        .output()
+        .await
+        .expect("run odin reload");
+
+    assert!(!output.status.success());
+    assert!(output.stderr.is_empty());
+    let payload: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("reload JSON error");
+    assert_eq!(payload["code"], "invalid-config");
+    assert!(payload["diagnostics"].is_null());
+    assert_eq!(
+        payload["config_diagnostics"][0]["field"],
+        "restart_initial_delay"
+    );
+    assert_eq!(payload["config_diagnostics"][0]["line"], 4);
+    assert_eq!(payload["config_diagnostics"][0]["column"], 25);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn start_cli_json_reports_operation_success() {
+    let dir = temp_dir("start-json-success");
+    let socket = dir.join("odin.sock");
+    let path = write_service(
+        &dir,
+        "json-start",
+        r#"
+name = "json-start"
+command = "/bin/sh"
+args = ["-c", "sleep 60"]
+autostart = false
+restart = "never"
+startup_timeout = "100ms"
+stop_timeout = "100ms"
+"#,
+    );
+    let service = config::load_service(&path).expect("service config should load");
+    let supervisor = SupervisorHandle::new(vec![service]);
+    let server_supervisor = supervisor.clone();
+    let server_socket = socket.clone();
+    let server_config_dir = dir.clone();
+    let server = tokio::spawn(async move {
+        let _ = odin::control::serve(&server_socket, server_config_dir, server_supervisor).await;
+    });
+
+    for _ in 0..100 {
+        if UnixStream::connect(&socket).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_odin"))
+        .arg("--socket")
+        .arg(&socket)
+        .arg("--json")
+        .arg("start")
+        .arg("json-start")
+        .output()
+        .await
+        .expect("run odin start");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let payload: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("start JSON result");
+    assert_eq!(payload["service"], "json-start");
+    assert_eq!(payload["action"], "start");
+    assert_eq!(payload["status"]["state"], "running");
+
+    supervisor.stop("json-start").await.expect("stop");
+    server.abort();
+}
+
+#[tokio::test]
+async fn control_missing_service_error_includes_operation_diagnostic() {
+    let dir = temp_dir("control-missing-operation");
+    let socket = dir.join("odin.sock");
+    let supervisor = SupervisorHandle::new(Vec::new());
+    let server_supervisor = supervisor.clone();
+    let server_socket = socket.clone();
+    let server_config_dir = dir.clone();
+    let server = tokio::spawn(async move {
+        let _ = odin::control::serve(&server_socket, server_config_dir, server_supervisor).await;
+    });
+
+    for _ in 0..100 {
+        if UnixStream::connect(&socket).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let response = odin::control::request(
+        &socket,
+        ControlRequest::Stop {
+            service: "missing".to_string(),
+        },
+    )
+    .await
+    .expect("stop request should receive response");
+
+    match response {
+        ControlResponse::Error { error } => {
+            assert_eq!(error.code, "service-not-found");
+            assert!(error.status.is_none());
+            let operation = error.operation.expect("operation diagnostic");
+            assert_eq!(operation.service, "missing");
+            assert_eq!(operation.action, OperationAction::Stop);
+            assert_eq!(operation.phase, OperationPhase::StateCheck);
+            assert_eq!(operation.pid, None);
+            assert_eq!(operation.state, None);
+            assert!(operation.recent_events.is_empty());
         }
         other => panic!("unexpected response: {other:?}"),
     }

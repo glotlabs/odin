@@ -62,13 +62,13 @@ async fn run() -> Result<()> {
         Command::Status { service } => print_status(&cli.socket, service, cli.json).await,
         Command::Events { service } => print_events(&cli.socket, &service, cli.json).await,
         Command::Start { service } => {
-            command_ok(&cli.socket, ControlRequest::Start { service }).await
+            command_ok(&cli.socket, ControlRequest::Start { service }, cli.json).await
         }
         Command::Stop { service } => {
-            command_ok(&cli.socket, ControlRequest::Stop { service }).await
+            command_ok(&cli.socket, ControlRequest::Stop { service }, cli.json).await
         }
         Command::Restart { service } => {
-            command_ok(&cli.socket, ControlRequest::Restart { service }).await
+            command_ok(&cli.socket, ControlRequest::Restart { service }, cli.json).await
         }
     }
 }
@@ -287,7 +287,7 @@ async fn reload(socket: &std::path::Path, json: bool) -> Result<()> {
             Ok(())
         }
         ControlResponse::Error { error } => {
-            if let Some(diagnostics) = &error.diagnostics {
+            if let Some(diagnostics) = &error.config_diagnostics {
                 if json {
                     println!(
                         "{}",
@@ -409,9 +409,17 @@ fn print_event_table(events: &[ServiceEvent]) {
     }
 }
 
-async fn command_ok(socket: &std::path::Path, request: ControlRequest) -> Result<()> {
+async fn command_ok(socket: &std::path::Path, request: ControlRequest, json: bool) -> Result<()> {
     match control::request(socket, request).await? {
         ControlResponse::Operation { result } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&result)
+                        .map_err(|err| OdinError::Protocol(err.to_string()))?
+                );
+                return Ok(());
+            }
             println!(
                 "{}: {} ({:?}, pid={})",
                 result.service,
@@ -430,6 +438,14 @@ async fn command_ok(socket: &std::path::Path, request: ControlRequest) -> Result
         }
         ControlResponse::Ok => Ok(()),
         ControlResponse::Error { error } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&error)
+                        .map_err(|err| OdinError::Protocol(err.to_string()))?
+                );
+                std::process::exit(1);
+            }
             print_control_error_details(&error);
             Err(OdinError::Protocol(format!(
                 "{}: {}",
@@ -443,6 +459,23 @@ async fn command_ok(socket: &std::path::Path, request: ControlRequest) -> Result
 }
 
 fn print_control_error_details(error: &odin::control::ControlError) {
+    if let Some(operation) = &error.operation {
+        eprintln!(
+            "{}: action={:?}, phase={:?}, pid={}, timeout_ms={}",
+            operation.service,
+            operation.action,
+            operation.phase,
+            operation
+                .pid
+                .map(|pid| pid.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            operation
+                .timeout_millis
+                .map(|timeout| timeout.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        );
+        eprintln!("operation: {}", operation.message);
+    }
     let Some(status) = &error.status else {
         return;
     };

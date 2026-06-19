@@ -23,6 +23,8 @@ pub enum OdinError {
     AlreadyRunning(String),
     #[error("service is not running: {0}")]
     NotRunning(String),
+    #[error("{0}")]
+    OperationFailure(#[from] crate::supervisor::OperationFailure),
     #[error("control protocol error: {0}")]
     Protocol(String),
     #[error("nix error: {0}")]

@@ -170,7 +170,7 @@ as structured `errors`, `warnings`, and `diagnostics` arrays:
 Reload uses the same diagnostics. If `odin reload` asks the monitor to reload an
 invalid config directory, the command prints source/caret diagnostics and exits
 non-zero. `odin --json reload` returns a structured control error with
-`code = "invalid-config"` and a `diagnostics` array.
+`code = "invalid-config"` and a `config_diagnostics` array.
 
 `odin add <name>` creates `<config-dir>/<name>.toml` and refuses to overwrite
 an existing file. Values are derived from the name:
@@ -207,6 +207,68 @@ last exit: signal: 9 (SIGKILL)
 If the process group still exists after `SIGKILL`, `odin stop` fails and prints
 the current service status plus recent events so the stuck stop can be diagnosed
 without immediately reading service logs.
+
+`odin --json start`, `odin --json stop`, and `odin --json restart` print the
+structured operation result on success. Control errors for those commands
+include a structured `operation` object. It records the service, action, typed
+failure phase, message, current pid/state when known, timeout in milliseconds
+when known, and the most recent lifecycle events:
+
+```json
+{
+  "code": "operation-failed",
+  "message": "service web failed startup: state=Failed, last_exit=exit status: 42",
+  "operation": {
+    "service": "web",
+    "action": "start",
+    "phase": "startup",
+    "message": "service web failed startup: state=Failed, last_exit=exit status: 42",
+    "state": "failed",
+    "recent_events": []
+  }
+}
+```
+
+## Control API
+
+The Unix socket protocol starts at `version = 1`. Each request and response is a
+single JSON envelope followed by a newline:
+
+```json
+{ "version": 1, "request": { "type": "status" } }
+```
+
+Successful control operations return typed response bodies such as `status`,
+`reload`, or `operation`. Start, stop, and restart operation results use command
+action names: `start`, `stop`, and `restart`.
+
+Errors use one shape for all control commands:
+
+```json
+{
+  "code": "operation-failed",
+  "message": "service web failed startup: state=Failed, last_exit=exit status: 42",
+  "config_diagnostics": null,
+  "operation": {
+    "service": "web",
+    "action": "start",
+    "phase": "startup",
+    "message": "service web failed startup: state=Failed, last_exit=exit status: 42",
+    "pid": null,
+    "state": "failed",
+    "timeout_millis": 2000,
+    "recent_events": []
+  },
+  "status": {
+    "name": "web",
+    "state": "failed"
+  }
+}
+```
+
+`config_diagnostics` is populated for reload-time config failures. `operation`
+and `status` are populated for start, stop, and restart failures when the
+monitor can identify the affected service.
 
 ## rc.d
 

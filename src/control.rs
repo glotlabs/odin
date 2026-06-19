@@ -6,8 +6,11 @@ use tokio::net::{UnixListener, UnixStream};
 
 use crate::config::ConfigDiagnostic;
 use crate::error::{OdinError, Result};
-use crate::status::ServiceStatus;
-use crate::supervisor::{OperationResult, ReloadSummary, SupervisorHandle};
+use crate::status::{ServiceEvent, ServiceState, ServiceStatus};
+use crate::supervisor::{
+    OperationAction, OperationFailure, OperationPhase, OperationResult, ReloadSummary,
+    SupervisorHandle,
+};
 
 pub const CONTROL_VERSION: u16 = 1;
 
@@ -50,8 +53,26 @@ pub struct ControlError {
     pub code: String,
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub diagnostics: Option<Vec<ConfigDiagnostic>>,
+    pub config_diagnostics: Option<Vec<ConfigDiagnostic>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<OperationDiagnostic>,
     pub status: Option<ServiceStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperationDiagnostic {
+    pub service: String,
+    pub action: OperationAction,
+    pub phase: OperationPhase,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ServiceState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_millis: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_events: Vec<ServiceEvent>,
 }
 
 pub async fn serve(path: &Path, config_dir: PathBuf, supervisor: SupervisorHandle) -> Result<()> {
@@ -116,7 +137,8 @@ async fn handle_connection(
             error: ControlError {
                 code: "unsupported-version".to_string(),
                 message: format!("unsupported control request version: {}", envelope.version),
-                diagnostics: None,
+                config_diagnostics: None,
+                operation: None,
                 status: None,
             },
         }
@@ -153,6 +175,7 @@ async fn dispatch(
             return operation_response(
                 supervisor.clone(),
                 &service,
+                OperationAction::Start,
                 supervisor.start(&service).await,
             )
             .await;
@@ -161,6 +184,7 @@ async fn dispatch(
             return operation_response(
                 supervisor.clone(),
                 &service,
+                OperationAction::Stop,
                 supervisor.stop(&service).await,
             )
             .await;
@@ -169,6 +193,7 @@ async fn dispatch(
             return operation_response(
                 supervisor.clone(),
                 &service,
+                OperationAction::Restart,
                 supervisor.restart(&service).await,
             )
             .await;
@@ -177,7 +202,7 @@ async fn dispatch(
     match result {
         Ok(response) => response,
         Err(err) => ControlResponse::Error {
-            error: control_error(&err, None),
+            error: control_error(&err, None, None),
         },
     }
 }
@@ -185,6 +210,7 @@ async fn dispatch(
 async fn operation_response(
     supervisor: SupervisorHandle,
     service: &str,
+    action: OperationAction,
     result: Result<OperationResult>,
 ) -> ControlResponse {
     match result {
@@ -195,23 +221,93 @@ async fn operation_response(
                 .await
                 .ok()
                 .and_then(|mut statuses| statuses.pop());
+            let operation = operation_diagnostic(service, action, &err, status.as_ref());
             ControlResponse::Error {
-                error: control_error(&err, status),
+                error: control_error(&err, status, operation),
             }
         }
     }
 }
 
-fn control_error(err: &OdinError, status: Option<ServiceStatus>) -> ControlError {
-    let diagnostics = match err {
+fn control_error(
+    err: &OdinError,
+    status: Option<ServiceStatus>,
+    operation: Option<OperationDiagnostic>,
+) -> ControlError {
+    let config_diagnostics = match err {
         OdinError::ConfigDiagnostics(diagnostics) => Some(diagnostics.diagnostics.clone()),
         _ => None,
     };
     ControlError {
         code: error_code(err).to_string(),
         message: err.to_string(),
-        diagnostics,
+        config_diagnostics,
+        operation,
         status,
+    }
+}
+
+fn operation_diagnostic(
+    service: &str,
+    action: OperationAction,
+    err: &OdinError,
+    status: Option<&ServiceStatus>,
+) -> Option<OperationDiagnostic> {
+    if matches!(err, OdinError::ConfigDiagnostics(_)) {
+        return None;
+    }
+    let failure = match err {
+        OdinError::OperationFailure(failure) => Some(failure),
+        _ => None,
+    };
+    let message = failure
+        .map(|failure| failure.message.clone())
+        .unwrap_or_else(|| err.to_string());
+    let recent_events = status
+        .map(|status| {
+            let start = status.event_history.len().saturating_sub(5);
+            status.event_history[start..].to_vec()
+        })
+        .unwrap_or_default();
+
+    Some(OperationDiagnostic {
+        service: service.to_string(),
+        action,
+        phase: operation_phase(action, err, failure, status),
+        message: message.clone(),
+        pid: failure
+            .and_then(|failure| failure.pid)
+            .or_else(|| status.and_then(|status| status.pid)),
+        state: status.map(|status| status.state),
+        timeout_millis: failure.and_then(|failure| failure.timeout_millis),
+        recent_events,
+    })
+}
+
+fn operation_phase(
+    action: OperationAction,
+    err: &OdinError,
+    failure: Option<&OperationFailure>,
+    status: Option<&ServiceStatus>,
+) -> OperationPhase {
+    if let Some(failure) = failure {
+        return failure.phase;
+    }
+    if matches!(
+        err,
+        OdinError::ServiceNotFound(_) | OdinError::AlreadyRunning(_) | OdinError::NotRunning(_)
+    ) {
+        return OperationPhase::StateCheck;
+    }
+    match action {
+        OperationAction::Start | OperationAction::Restart => OperationPhase::Startup,
+        OperationAction::Stop => {
+            if status.is_some_and(|status| status.state == ServiceState::Stopping) {
+                OperationPhase::Stop
+            } else {
+                OperationPhase::Runtime
+            }
+        }
     }
 }
 
@@ -220,6 +316,7 @@ fn error_code(err: &OdinError) -> &'static str {
         OdinError::ServiceNotFound(_) => "service-not-found",
         OdinError::AlreadyRunning(_) => "already-running",
         OdinError::NotRunning(_) => "not-running",
+        OdinError::OperationFailure(_) => "operation-failed",
         OdinError::ConfigDiagnostics(_) => "invalid-config",
         OdinError::InvalidConfig { .. } => "invalid-config",
         OdinError::DuplicateService(_) => "duplicate-service",

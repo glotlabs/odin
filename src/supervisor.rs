@@ -35,10 +35,39 @@ pub struct OperationResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OperationAction {
-    Started,
-    Stopped,
-    Restarted,
+    Start,
+    Stop,
+    Restart,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OperationPhase {
+    StateCheck,
+    Startup,
+    Stop,
+    Sigterm,
+    Sigkill,
+    Runtime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OperationFailure {
+    pub service: String,
+    pub action: OperationAction,
+    pub phase: OperationPhase,
+    pub message: String,
+    pub pid: Option<u32>,
+    pub timeout_millis: Option<u64>,
+}
+
+impl std::fmt::Display for OperationFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for OperationFailure {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StopOutcome {
@@ -113,9 +142,9 @@ impl SupervisorHandle {
             service.config.clone()
         };
         self.spawn_and_track(config.clone(), None)?;
-        self.wait_for_startup(&config.name, config.startup_timeout)
+        self.wait_for_startup(&config.name, OperationAction::Start, config.startup_timeout)
             .await?;
-        self.operation_result(&config.name, OperationAction::Started, "service started")
+        self.operation_result(&config.name, OperationAction::Start, "service started")
     }
 
     pub async fn stop(&self, name: &str) -> Result<OperationResult> {
@@ -131,7 +160,7 @@ impl SupervisorHandle {
                 service.notify_stopped();
                 return self.operation_result(
                     name,
-                    OperationAction::Stopped,
+                    OperationAction::Stop,
                     "service already stopped",
                 );
             }
@@ -146,11 +175,7 @@ impl SupervisorHandle {
         };
 
         let Some(pid) = pid else {
-            return self.operation_result(
-                name,
-                OperationAction::Stopped,
-                "service already stopped",
-            );
+            return self.operation_result(name, OperationAction::Stop, "service already stopped");
         };
         let outcome = terminate_process_group(pid, timeout, stopped).await;
         match outcome {
@@ -175,13 +200,21 @@ impl SupervisorHandle {
                         format!("stop failed: process group {pid} still exists after SIGKILL"),
                     );
                 }
-                return Err(OdinError::Protocol(format!(
-                    "service {name} did not stop after SIGTERM, {}ms timeout, and SIGKILL; pid={pid}",
-                    timeout.as_millis()
-                )));
+                return Err(OperationFailure {
+                    service: name.to_string(),
+                    action: OperationAction::Stop,
+                    phase: OperationPhase::Sigkill,
+                    message: format!(
+                        "service {name} did not stop after SIGTERM, {}ms timeout, and SIGKILL; pid={pid}",
+                        timeout.as_millis()
+                    ),
+                    pid: Some(pid),
+                    timeout_millis: Some(timeout.as_millis() as u64),
+                }
+                .into());
             }
         }
-        self.operation_result(name, OperationAction::Stopped, stop_message(outcome))
+        self.operation_result(name, OperationAction::Stop, stop_message(outcome))
     }
 
     pub async fn restart(&self, name: &str) -> Result<OperationResult> {
@@ -244,8 +277,9 @@ impl SupervisorHandle {
                 .config
                 .clone()
         };
-        self.wait_for_startup(name, config.startup_timeout).await?;
-        self.operation_result(name, OperationAction::Restarted, "service restarted")
+        self.wait_for_startup(name, OperationAction::Restart, config.startup_timeout)
+            .await?;
+        self.operation_result(name, OperationAction::Restart, "service restarted")
     }
 
     pub async fn shutdown(&self) {
@@ -432,7 +466,12 @@ impl SupervisorHandle {
         Ok(())
     }
 
-    async fn wait_for_startup(&self, name: &str, timeout: Duration) -> Result<()> {
+    async fn wait_for_startup(
+        &self,
+        name: &str,
+        action: OperationAction,
+        timeout: Duration,
+    ) -> Result<()> {
         let deadline = time::Instant::now() + timeout;
         let mut startup_grace_applied = false;
         let mut last_health_error = None;
@@ -447,11 +486,19 @@ impl SupervisorHandle {
 
             match status.state {
                 ServiceState::Failed | ServiceState::Stopped | ServiceState::BackingOff => {
-                    return Err(OdinError::Protocol(format!(
-                        "service {name} failed startup: state={:?}, last_exit={}",
-                        status.state,
-                        status.last_exit.unwrap_or_else(|| "unknown".to_string())
-                    )));
+                    return Err(OperationFailure {
+                        service: name.to_string(),
+                        action,
+                        phase: OperationPhase::Startup,
+                        message: format!(
+                            "service {name} failed startup: state={:?}, last_exit={}",
+                            status.state,
+                            status.last_exit.unwrap_or_else(|| "unknown".to_string())
+                        ),
+                        pid: status.pid,
+                        timeout_millis: Some(timeout.as_millis() as u64),
+                    }
+                    .into());
                 }
                 ServiceState::Starting | ServiceState::Stopping => {}
                 ServiceState::Running => {}
@@ -464,11 +511,19 @@ impl SupervisorHandle {
                     if !healthcheck.startup_grace.is_zero() {
                         let remaining = deadline.saturating_duration_since(time::Instant::now());
                         if remaining.is_zero() {
-                            return Err(OdinError::Protocol(format!(
-                                "service {name} did not become healthy within {}ms; health={:?}",
-                                timeout.as_millis(),
-                                status.health
-                            )));
+                            return Err(OperationFailure {
+                                service: name.to_string(),
+                                action,
+                                phase: OperationPhase::Startup,
+                                message: format!(
+                                    "service {name} did not become healthy within {}ms; health={:?}",
+                                    timeout.as_millis(),
+                                    status.health
+                                ),
+                                pid: status.pid,
+                                timeout_millis: Some(timeout.as_millis() as u64),
+                            }
+                            .into());
                         }
                         time::sleep(healthcheck.startup_grace.min(remaining)).await;
                         continue;
@@ -477,11 +532,19 @@ impl SupervisorHandle {
 
                 let remaining = deadline.saturating_duration_since(time::Instant::now());
                 if remaining.is_zero() {
-                    return Err(OdinError::Protocol(format!(
-                        "service {name} did not become healthy within {}ms; health={:?}",
-                        timeout.as_millis(),
-                        status.health
-                    )));
+                    return Err(OperationFailure {
+                        service: name.to_string(),
+                        action,
+                        phase: OperationPhase::Startup,
+                        message: format!(
+                            "service {name} did not become healthy within {}ms; health={:?}",
+                            timeout.as_millis(),
+                            status.health
+                        ),
+                        pid: status.pid,
+                        timeout_millis: Some(timeout.as_millis() as u64),
+                    }
+                    .into());
                 }
                 healthcheck.timeout = healthcheck.timeout.min(remaining);
 
@@ -521,16 +584,32 @@ impl SupervisorHandle {
                     return Ok(());
                 }
                 if let Some(message) = last_health_error {
-                    return Err(OdinError::Protocol(format!(
-                        "service {name} did not become healthy within {}ms: {message}",
-                        timeout.as_millis()
-                    )));
+                    return Err(OperationFailure {
+                        service: name.to_string(),
+                        action,
+                        phase: OperationPhase::Startup,
+                        message: format!(
+                            "service {name} did not become healthy within {}ms: {message}",
+                            timeout.as_millis()
+                        ),
+                        pid: status.pid,
+                        timeout_millis: Some(timeout.as_millis() as u64),
+                    }
+                    .into());
                 }
-                return Err(OdinError::Protocol(format!(
-                    "service {name} did not stay running within {}ms; state={:?}",
-                    timeout.as_millis(),
-                    status.state
-                )));
+                return Err(OperationFailure {
+                    service: name.to_string(),
+                    action,
+                    phase: OperationPhase::Startup,
+                    message: format!(
+                        "service {name} did not stay running within {}ms; state={:?}",
+                        timeout.as_millis(),
+                        status.state,
+                    ),
+                    pid: status.pid,
+                    timeout_millis: Some(timeout.as_millis() as u64),
+                }
+                .into());
             }
             time::sleep(Duration::from_millis(25)).await;
         }
