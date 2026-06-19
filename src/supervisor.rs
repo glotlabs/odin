@@ -46,7 +46,6 @@ pub enum OperationPhase {
     StateCheck,
     Startup,
     Stop,
-    Sigterm,
     Sigkill,
     Runtime,
 }

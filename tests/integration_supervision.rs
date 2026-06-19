@@ -7,13 +7,16 @@ use odin::OdinError;
 use odin::config::{
     self, ConfigSeverity, HealthAction, HealthCheckConfig, HealthCheckKind, RestartPolicy,
 };
-use odin::control::{ControlRequest, ControlResponse};
+use odin::control::{
+    CONTROL_VERSION, ControlEnvelope, ControlError, ControlRequest, ControlResponse,
+    ControlResponseEnvelope, OperationDiagnostic,
+};
 use odin::service::ServiceRuntime;
 use odin::status::{
-    MAX_EVENT_HISTORY, MAX_RESTART_HISTORY, RestartHistoryEntry, RestartReason, ServiceEventKind,
-    ServiceState,
+    HealthStatus, MAX_EVENT_HISTORY, MAX_RESTART_HISTORY, RestartHistoryEntry, RestartReason,
+    ServiceEvent, ServiceEventKind, ServiceState, ServiceStatus,
 };
-use odin::supervisor::{OperationAction, OperationPhase, SupervisorHandle};
+use odin::supervisor::{OperationAction, OperationPhase, OperationResult, SupervisorHandle};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixStream};
 
@@ -31,6 +34,215 @@ fn write_service(dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(format!("{name}.toml"));
     fs::write(&path, body).expect("write service config");
     path
+}
+
+fn status_fixture(name: &str, state: ServiceState) -> ServiceStatus {
+    ServiceStatus {
+        name: name.to_string(),
+        state,
+        pid: None,
+        uptime_seconds: None,
+        restart_count: 0,
+        last_exit: None,
+        health: HealthStatus::Unknown,
+        restart_history: Vec::new(),
+        event_history: Vec::new(),
+    }
+}
+
+#[test]
+fn control_request_schema_uses_v1_command_envelope() {
+    let payload = serde_json::to_value(ControlEnvelope {
+        version: CONTROL_VERSION,
+        request: ControlRequest::Start {
+            service: "web".to_string(),
+        },
+    })
+    .expect("serialize control request");
+
+    assert_eq!(
+        payload,
+        serde_json::json!({
+            "version": 1,
+            "command": "start",
+            "service": "web"
+        })
+    );
+}
+
+#[test]
+fn control_operation_result_schema_uses_command_action_names() {
+    let payload = serde_json::to_value(ControlResponseEnvelope {
+        version: CONTROL_VERSION,
+        response: ControlResponse::Operation {
+            result: OperationResult {
+                service: "web".to_string(),
+                action: OperationAction::Start,
+                message: "service started".to_string(),
+                status: status_fixture("web", ServiceState::Running),
+            },
+        },
+    })
+    .expect("serialize operation response");
+
+    assert_eq!(
+        payload,
+        serde_json::json!({
+            "version": 1,
+            "kind": "operation",
+            "result": {
+                "service": "web",
+                "action": "start",
+                "message": "service started",
+                "status": {
+                    "name": "web",
+                    "state": "running",
+                    "pid": null,
+                    "uptime_seconds": null,
+                    "restart_count": 0,
+                    "last_exit": null,
+                    "health": "unknown",
+                    "restart_history": [],
+                    "event_history": []
+                }
+            }
+        })
+    );
+}
+
+#[test]
+fn control_operation_error_schema_includes_operation_and_status() {
+    let mut status = status_fixture("web", ServiceState::Failed);
+    status.event_history.push(ServiceEvent {
+        at_unix_seconds: 123,
+        kind: ServiceEventKind::Exited,
+        message: "exit status: 42".to_string(),
+    });
+
+    let payload = serde_json::to_value(ControlResponseEnvelope {
+        version: CONTROL_VERSION,
+        response: ControlResponse::Error {
+            error: ControlError {
+                code: "operation-failed".to_string(),
+                message: "service web failed startup".to_string(),
+                config_diagnostics: None,
+                operation: Some(OperationDiagnostic {
+                    service: "web".to_string(),
+                    action: OperationAction::Start,
+                    phase: OperationPhase::Startup,
+                    message: "service web failed startup".to_string(),
+                    pid: None,
+                    state: Some(ServiceState::Failed),
+                    timeout_millis: Some(2000),
+                    recent_events: vec![ServiceEvent {
+                        at_unix_seconds: 123,
+                        kind: ServiceEventKind::Exited,
+                        message: "exit status: 42".to_string(),
+                    }],
+                }),
+                status: Some(status),
+            },
+        },
+    })
+    .expect("serialize operation error");
+
+    assert_eq!(
+        payload,
+        serde_json::json!({
+            "version": 1,
+            "kind": "error",
+            "error": {
+                "code": "operation-failed",
+                "message": "service web failed startup",
+                "operation": {
+                    "service": "web",
+                    "action": "start",
+                    "phase": "startup",
+                    "message": "service web failed startup",
+                    "state": "failed",
+                    "timeout_millis": 2000,
+                    "recent_events": [
+                        {
+                            "at_unix_seconds": 123,
+                            "kind": "exited",
+                            "message": "exit status: 42"
+                        }
+                    ]
+                },
+                "status": {
+                    "name": "web",
+                    "state": "failed",
+                    "pid": null,
+                    "uptime_seconds": null,
+                    "restart_count": 0,
+                    "last_exit": null,
+                    "health": "unknown",
+                    "restart_history": [],
+                    "event_history": [
+                        {
+                            "at_unix_seconds": 123,
+                            "kind": "exited",
+                            "message": "exit status: 42"
+                        }
+                    ]
+                }
+            }
+        })
+    );
+}
+
+#[test]
+fn control_config_error_schema_uses_config_diagnostics() {
+    let payload = serde_json::to_value(ControlResponseEnvelope {
+        version: CONTROL_VERSION,
+        response: ControlResponse::Error {
+            error: ControlError {
+                code: "invalid-config".to_string(),
+                message: "configuration has 1 error".to_string(),
+                config_diagnostics: Some(vec![config::ConfigDiagnostic {
+                    severity: ConfigSeverity::Error,
+                    path: PathBuf::from("/usr/local/etc/odin/services/web.toml"),
+                    line: Some(3),
+                    column: Some(11),
+                    service: Some("web".to_string()),
+                    field: Some("command".to_string()),
+                    message: "command must be an absolute path".to_string(),
+                    help: Some(
+                        "Set command to an absolute path such as \"/usr/local/bin/app\"."
+                            .to_string(),
+                    ),
+                }]),
+                operation: None,
+                status: None,
+            },
+        },
+    })
+    .expect("serialize config error");
+
+    assert_eq!(
+        payload,
+        serde_json::json!({
+            "version": 1,
+            "kind": "error",
+            "error": {
+                "code": "invalid-config",
+                "message": "configuration has 1 error",
+                "config_diagnostics": [
+                    {
+                        "severity": "error",
+                        "path": "/usr/local/etc/odin/services/web.toml",
+                        "line": 3,
+                        "column": 11,
+                        "service": "web",
+                        "field": "command",
+                        "message": "command must be an absolute path",
+                        "help": "Set command to an absolute path such as \"/usr/local/bin/app\"."
+                    }
+                ],
+                "status": null
+            }
+        })
+    );
 }
 
 #[test]
@@ -1341,6 +1553,59 @@ startup_timeout = "100ms"
     assert_eq!(payload["operation"]["action"], "start");
     assert_eq!(payload["operation"]["phase"], "startup");
     assert_eq!(payload["operation"]["timeout_millis"], 100);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn start_cli_text_reports_operation_error_details() {
+    let dir = temp_dir("start-text-operation");
+    let socket = dir.join("odin.sock");
+    let path = write_service(
+        &dir,
+        "bad-start",
+        r#"
+name = "bad-start"
+command = "/bin/sh"
+args = ["-c", "exit 42"]
+autostart = false
+restart = "never"
+startup_timeout = "100ms"
+"#,
+    );
+    let service = config::load_service(&path).expect("service config should load");
+    let supervisor = SupervisorHandle::new(vec![service]);
+    let server_supervisor = supervisor.clone();
+    let server_socket = socket.clone();
+    let server_config_dir = dir.clone();
+    let server = tokio::spawn(async move {
+        let _ = odin::control::serve(&server_socket, server_config_dir, server_supervisor).await;
+    });
+
+    for _ in 0..100 {
+        if UnixStream::connect(&socket).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_odin"))
+        .arg("--socket")
+        .arg(&socket)
+        .arg("start")
+        .arg("bad-start")
+        .output()
+        .await
+        .expect("run odin start");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("bad-start: action=start, phase=startup"));
+    assert!(stderr.contains("state=failed"));
+    assert!(stderr.contains("timeout_ms=100"));
+    assert!(stderr.contains("operation: service bad-start failed startup"));
+    assert!(stderr.contains("event: "));
 
     server.abort();
 }

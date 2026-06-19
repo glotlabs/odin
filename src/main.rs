@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use odin::config::{self, ConfigDiagnostic, ConfigDiagnostics, ConfigSeverity, ValidationReport};
 use odin::control::{self, ControlRequest, ControlResponse};
-use odin::status::ServiceEvent;
-use odin::supervisor::SupervisorHandle;
+use odin::status::{ServiceEvent, ServiceState};
+use odin::supervisor::{OperationAction, OperationPhase, SupervisorHandle};
 use odin::{OdinError, Result};
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -421,10 +421,11 @@ async fn command_ok(socket: &std::path::Path, request: ControlRequest, json: boo
                 return Ok(());
             }
             println!(
-                "{}: {} ({:?}, pid={})",
+                "{}: {} (action={}, state={}, pid={})",
                 result.service,
                 result.message,
-                result.status.state,
+                operation_action_label(result.action),
+                service_state_label(result.status.state),
                 result
                     .status
                     .pid
@@ -461,14 +462,15 @@ async fn command_ok(socket: &std::path::Path, request: ControlRequest, json: boo
 fn print_control_error_details(error: &odin::control::ControlError) {
     if let Some(operation) = &error.operation {
         eprintln!(
-            "{}: action={:?}, phase={:?}, pid={}, timeout_ms={}",
+            "{}: action={}, phase={}, pid={}, state={}, timeout_ms={}",
             operation.service,
-            operation.action,
-            operation.phase,
+            operation_action_label(operation.action),
+            operation_phase_label(operation.phase),
             operation
                 .pid
                 .map(|pid| pid.to_string())
                 .unwrap_or_else(|| "-".to_string()),
+            operation.state.map(service_state_label).unwrap_or("-"),
             operation
                 .timeout_millis
                 .map(|timeout| timeout.to_string())
@@ -480,9 +482,9 @@ fn print_control_error_details(error: &odin::control::ControlError) {
         return;
     };
     eprintln!(
-        "{}: state={:?}, pid={}, restarts={}",
+        "{}: state={}, pid={}, restarts={}",
         status.name,
-        status.state,
+        service_state_label(status.state),
         status
             .pid
             .map(|pid| pid.to_string())
@@ -499,5 +501,34 @@ fn print_control_error_details(error: &odin::control::ControlError) {
             "event: {} {:?}: {}",
             event.at_unix_seconds, event.kind, event.message
         );
+    }
+}
+
+fn operation_action_label(action: OperationAction) -> &'static str {
+    match action {
+        OperationAction::Start => "start",
+        OperationAction::Stop => "stop",
+        OperationAction::Restart => "restart",
+    }
+}
+
+fn operation_phase_label(phase: OperationPhase) -> &'static str {
+    match phase {
+        OperationPhase::StateCheck => "state-check",
+        OperationPhase::Startup => "startup",
+        OperationPhase::Stop => "stop",
+        OperationPhase::Sigkill => "sigkill",
+        OperationPhase::Runtime => "runtime",
+    }
+}
+
+fn service_state_label(state: ServiceState) -> &'static str {
+    match state {
+        ServiceState::Stopped => "stopped",
+        ServiceState::Starting => "starting",
+        ServiceState::Running => "running",
+        ServiceState::Stopping => "stopping",
+        ServiceState::Failed => "failed",
+        ServiceState::BackingOff => "backing-off",
     }
 }

@@ -208,6 +208,26 @@ If the process group still exists after `SIGKILL`, `odin stop` fails and prints
 the current service status plus recent events so the stuck stop can be diagnosed
 without immediately reading service logs.
 
+The JSON error uses the same operation diagnostic shape with `phase =
+"sigkill"`:
+
+```json
+{
+  "code": "operation-failed",
+  "message": "service web did not stop after SIGTERM, 10000ms timeout, and SIGKILL; pid=1234",
+  "operation": {
+    "service": "web",
+    "action": "stop",
+    "phase": "sigkill",
+    "message": "service web did not stop after SIGTERM, 10000ms timeout, and SIGKILL; pid=1234",
+    "pid": 1234,
+    "state": "stopping",
+    "timeout_millis": 10000,
+    "recent_events": []
+  }
+}
+```
+
 `odin --json start`, `odin --json stop`, and `odin --json restart` print the
 structured operation result on success. Control errors for those commands
 include a structured `operation` object. It records the service, action, typed
