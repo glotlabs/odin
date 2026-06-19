@@ -27,14 +27,23 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Run the foreground supervisor
     Serve,
+    /// Create a starter service config
     Add { name: String },
+    /// Validate service configs without starting services
     Validate,
+    /// Reload the supervisor config over the control socket
     Reload,
+    /// Show service status
     Status { service: Option<String> },
+    /// Show recent lifecycle events for a service
     Events { service: String },
+    /// Start a service
     Start { service: String },
+    /// Stop a service
     Stop { service: String },
+    /// Restart a service
     Restart { service: String },
 }
 
