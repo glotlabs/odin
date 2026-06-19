@@ -2,14 +2,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use supper::config::{self, HealthAction, HealthCheckConfig, HealthCheckKind, RestartPolicy};
-use supper::control::{ControlRequest, ControlResponse};
-use supper::service::ServiceRuntime;
-use supper::status::{
+use odin::config::{self, HealthAction, HealthCheckConfig, HealthCheckKind, RestartPolicy};
+use odin::control::{ControlRequest, ControlResponse};
+use odin::service::ServiceRuntime;
+use odin::status::{
     MAX_EVENT_HISTORY, MAX_RESTART_HISTORY, RestartHistoryEntry, RestartReason, ServiceEventKind,
     ServiceState,
 };
-use supper::supervisor::SupervisorHandle;
+use odin::supervisor::SupervisorHandle;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixStream};
 
@@ -18,7 +18,7 @@ fn temp_dir(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("system clock must be after unix epoch")
         .as_nanos();
-    let dir = PathBuf::from("/tmp").join(format!("supper-{name}-{nonce}"));
+    let dir = PathBuf::from("/tmp").join(format!("odin-{name}-{nonce}"));
     fs::create_dir_all(&dir).expect("create temp dir");
     dir
 }
@@ -97,11 +97,11 @@ fn add_service_file_derives_config_from_name() {
     assert_eq!(added.service.cwd, Some(PathBuf::from("/usr/local/my-app")));
     assert_eq!(
         added.service.stdout_log,
-        Some(PathBuf::from("/var/log/supper/my-app.out.log"))
+        Some(PathBuf::from("/var/log/odin/my-app.out.log"))
     );
     assert_eq!(
         added.service.stderr_log,
-        Some(PathBuf::from("/var/log/supper/my-app.err.log"))
+        Some(PathBuf::from("/var/log/odin/my-app.err.log"))
     );
     assert!(added.service.autostart);
     assert_eq!(added.service.restart, RestartPolicy::Always);
@@ -162,7 +162,7 @@ fn validate_config_dir_rejects_missing_command() {
         "missing",
         r#"
 name = "missing"
-command = "/definitely/not/a/supper/test/command"
+command = "/definitely/not/a/odin/test/command"
 autostart = false
 "#,
     );
@@ -382,7 +382,7 @@ action = "ignore"
         .await
         .expect("start should wait for healthy");
 
-    assert_eq!(result.status.health, supper::status::HealthStatus::Healthy);
+    assert_eq!(result.status.health, odin::status::HealthStatus::Healthy);
     assert_eq!(result.status.state, ServiceState::Running);
     server.await.expect("server task");
     supervisor.stop("healthy-start").await.expect("stop");
@@ -437,7 +437,7 @@ action = "ignore"
     assert_eq!(status.state, ServiceState::Running);
     assert!(matches!(
         status.health,
-        supper::status::HealthStatus::Unhealthy(_)
+        odin::status::HealthStatus::Unhealthy(_)
     ));
     assert!(
         status
@@ -762,14 +762,14 @@ async fn command_health_check_success_and_timeout() {
         retries: 1,
         action: HealthAction::Restart,
     };
-    supper::health::check(&ok).await.expect("healthy command");
+    odin::health::check(&ok).await.expect("healthy command");
 
     let timeout = HealthCheckConfig {
         args: vec!["-c".to_string(), "sleep 5".to_string()],
         timeout: Duration::from_millis(50),
         ..ok
     };
-    let err = supper::health::check(&timeout)
+    let err = odin::health::check(&timeout)
         .await
         .expect_err("timeout should fail");
     assert!(err.to_string().contains("timed out"));
@@ -796,7 +796,7 @@ async fn tcp_health_check_success() {
         action: HealthAction::Restart,
     };
 
-    supper::health::check(&check).await.expect("tcp healthy");
+    odin::health::check(&check).await.expect("tcp healthy");
     server.await.expect("server task");
 }
 
@@ -830,14 +830,14 @@ async fn http_health_check_success() {
         action: HealthAction::Restart,
     };
 
-    supper::health::check(&check).await.expect("http healthy");
+    odin::health::check(&check).await.expect("http healthy");
     server.await.expect("server task");
 }
 
 #[tokio::test]
 async fn control_status_round_trips_over_unix_socket() {
     let dir = temp_dir("control");
-    let socket = dir.join("supper.sock");
+    let socket = dir.join("odin.sock");
     let path = write_service(
         &dir,
         "idle",
@@ -854,7 +854,7 @@ autostart = false
     let server_config_dir = dir.clone();
 
     let server = tokio::spawn(async move {
-        let _ = supper::control::serve(&server_socket, server_config_dir, server_supervisor).await;
+        let _ = odin::control::serve(&server_socket, server_config_dir, server_supervisor).await;
     });
 
     for _ in 0..100 {
@@ -864,7 +864,7 @@ autostart = false
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    let response = supper::control::request(&socket, ControlRequest::Status { service: None })
+    let response = odin::control::request(&socket, ControlRequest::Status { service: None })
         .await
         .expect("control request should succeed");
     server.abort();
@@ -881,14 +881,14 @@ autostart = false
 #[tokio::test]
 async fn control_reload_loads_new_service_from_config_dir() {
     let dir = temp_dir("control-reload");
-    let socket = dir.join("supper.sock");
+    let socket = dir.join("odin.sock");
     let supervisor = SupervisorHandle::new(Vec::new());
     let server_supervisor = supervisor.clone();
     let server_socket = socket.clone();
     let server_config_dir = dir.clone();
 
     let server = tokio::spawn(async move {
-        let _ = supper::control::serve(&server_socket, server_config_dir, server_supervisor).await;
+        let _ = odin::control::serve(&server_socket, server_config_dir, server_supervisor).await;
     });
 
     for _ in 0..100 {
@@ -911,7 +911,7 @@ stop_timeout = "100ms"
 "#,
     );
 
-    let response = supper::control::request(&socket, ControlRequest::Reload)
+    let response = odin::control::request(&socket, ControlRequest::Reload)
         .await
         .expect("reload request should succeed");
 
@@ -932,7 +932,7 @@ stop_timeout = "100ms"
 #[tokio::test]
 async fn control_start_failure_includes_status_feedback() {
     let dir = temp_dir("control-start-failure");
-    let socket = dir.join("supper.sock");
+    let socket = dir.join("odin.sock");
     let path = write_service(
         &dir,
         "bad-start",
@@ -951,7 +951,7 @@ startup_timeout = "100ms"
     let server_socket = socket.clone();
     let server_config_dir = dir.clone();
     let server = tokio::spawn(async move {
-        let _ = supper::control::serve(&server_socket, server_config_dir, server_supervisor).await;
+        let _ = odin::control::serve(&server_socket, server_config_dir, server_supervisor).await;
     });
 
     for _ in 0..100 {
@@ -961,7 +961,7 @@ startup_timeout = "100ms"
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    let response = supper::control::request(
+    let response = odin::control::request(
         &socket,
         ControlRequest::Start {
             service: "bad-start".to_string(),
@@ -992,7 +992,7 @@ startup_timeout = "100ms"
 #[tokio::test]
 async fn control_restart_restarts_service() {
     let dir = temp_dir("control-restart");
-    let socket = dir.join("supper.sock");
+    let socket = dir.join("odin.sock");
     let path = write_service(
         &dir,
         "worker",
@@ -1019,7 +1019,7 @@ stop_timeout = "100ms"
     let server_socket = socket.clone();
     let server_config_dir = dir.clone();
     let server = tokio::spawn(async move {
-        let _ = supper::control::serve(&server_socket, server_config_dir, server_supervisor).await;
+        let _ = odin::control::serve(&server_socket, server_config_dir, server_supervisor).await;
     });
 
     for _ in 0..100 {
@@ -1029,7 +1029,7 @@ stop_timeout = "100ms"
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    let response = supper::control::request(
+    let response = odin::control::request(
         &socket,
         ControlRequest::Restart {
             service: "worker".to_string(),

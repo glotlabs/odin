@@ -13,8 +13,8 @@ restart = "on-failure"
 restart_initial_delay = "1s"
 restart_max_delay = "30s"
 
-stdout_log = "/var/log/supper/web.out.log"
-stderr_log = "/var/log/supper/web.err.log"
+stdout_log = "/var/log/odin/web.out.log"
+stderr_log = "/var/log/odin/web.err.log"
 
 [healthcheck]
 type = "http"

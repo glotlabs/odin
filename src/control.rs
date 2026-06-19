@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::error::{Result, SupperError};
+use crate::error::{OdinError, Result};
 use crate::status::ServiceStatus;
 use crate::supervisor::{OperationResult, ReloadSummary, SupervisorHandle};
 
@@ -78,7 +78,7 @@ pub async fn request(path: &Path, request: ControlRequest) -> Result<ControlResp
         version: CONTROL_VERSION,
         request,
     })
-    .map_err(|err| SupperError::Protocol(err.to_string()))?;
+    .map_err(|err| OdinError::Protocol(err.to_string()))?;
     stream.write_all(&encoded).await?;
     stream.write_all(b"\n").await?;
 
@@ -86,9 +86,9 @@ pub async fn request(path: &Path, request: ControlRequest) -> Result<ControlResp
     let mut line = String::new();
     reader.read_line(&mut line).await?;
     let envelope: ControlResponseEnvelope =
-        serde_json::from_str(&line).map_err(|err| SupperError::Protocol(err.to_string()))?;
+        serde_json::from_str(&line).map_err(|err| OdinError::Protocol(err.to_string()))?;
     if envelope.version != CONTROL_VERSION {
-        return Err(SupperError::Protocol(format!(
+        return Err(OdinError::Protocol(format!(
             "unsupported control response version: {}",
             envelope.version
         )));
@@ -105,7 +105,7 @@ async fn handle_connection(
     let mut line = String::new();
     reader.read_line(&mut line).await?;
     let envelope: ControlEnvelope =
-        serde_json::from_str(&line).map_err(|err| SupperError::Protocol(err.to_string()))?;
+        serde_json::from_str(&line).map_err(|err| OdinError::Protocol(err.to_string()))?;
     let response = if envelope.version == CONTROL_VERSION {
         dispatch(envelope.request, config_dir, supervisor).await
     } else {
@@ -121,7 +121,7 @@ async fn handle_connection(
         version: CONTROL_VERSION,
         response,
     })
-    .map_err(|err| SupperError::Protocol(err.to_string()))?;
+    .map_err(|err| OdinError::Protocol(err.to_string()))?;
     let stream = reader.get_mut();
     stream.write_all(&payload).await?;
     stream.write_all(b"\n").await?;
@@ -206,18 +206,18 @@ async fn operation_response(
     }
 }
 
-fn error_code(err: &SupperError) -> &'static str {
+fn error_code(err: &OdinError) -> &'static str {
     match err {
-        SupperError::ServiceNotFound(_) => "service-not-found",
-        SupperError::AlreadyRunning(_) => "already-running",
-        SupperError::NotRunning(_) => "not-running",
-        SupperError::InvalidConfig { .. } => "invalid-config",
-        SupperError::DuplicateService(_) => "duplicate-service",
-        SupperError::Toml { .. } => "toml",
-        SupperError::TomlSerialize(_) => "toml-serialize",
-        SupperError::Io(_) => "io",
-        SupperError::Nix(_) => "nix",
-        SupperError::Http(_) => "http",
-        SupperError::Protocol(_) => "protocol",
+        OdinError::ServiceNotFound(_) => "service-not-found",
+        OdinError::AlreadyRunning(_) => "already-running",
+        OdinError::NotRunning(_) => "not-running",
+        OdinError::InvalidConfig { .. } => "invalid-config",
+        OdinError::DuplicateService(_) => "duplicate-service",
+        OdinError::Toml { .. } => "toml",
+        OdinError::TomlSerialize(_) => "toml-serialize",
+        OdinError::Io(_) => "io",
+        OdinError::Nix(_) => "nix",
+        OdinError::Http(_) => "http",
+        OdinError::Protocol(_) => "protocol",
     }
 }

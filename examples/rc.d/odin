@@ -1,0 +1,23 @@
+#!/bin/sh
+
+# PROVIDE: odin
+# REQUIRE: LOGIN
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="odin"
+rcvar="odin_enable"
+
+: ${odin_enable:="NO"}
+: ${odin_config_dir:="/usr/local/etc/odin/services"}
+: ${odin_socket:="/var/run/odin.sock"}
+: ${odin_user:="root"}
+
+command="/usr/sbin/daemon"
+pidfile="/var/run/${name}.pid"
+procname="/usr/local/bin/odin"
+command_args="-f -p ${pidfile} ${procname} --config-dir ${odin_config_dir} --socket ${odin_socket} monitor"
+
+load_rc_config "$name"
+run_rc_command "$1"

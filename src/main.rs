@@ -1,18 +1,18 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use supper::config;
-use supper::control::{self, ControlRequest, ControlResponse};
-use supper::status::ServiceEvent;
-use supper::supervisor::SupervisorHandle;
-use supper::{Result, SupperError};
+use odin::config;
+use odin::control::{self, ControlRequest, ControlResponse};
+use odin::status::ServiceEvent;
+use odin::supervisor::SupervisorHandle;
+use odin::{OdinError, Result};
 use tokio::signal::unix::{SignalKind, signal};
 
-const DEFAULT_CONFIG_DIR: &str = "/usr/local/etc/supper/services";
-const DEFAULT_SOCKET: &str = "/var/run/supper.sock";
+const DEFAULT_CONFIG_DIR: &str = "/usr/local/etc/odin/services";
+const DEFAULT_SOCKET: &str = "/var/run/odin.sock";
 
 #[derive(Debug, Parser)]
-#[command(name = "supper", version, about = "Minimal FreeBSD service supervisor")]
+#[command(name = "odin", version, about = "Minimal FreeBSD service supervisor")]
 struct Cli {
     #[arg(long, default_value = DEFAULT_CONFIG_DIR, global = true)]
     config_dir: PathBuf,
@@ -68,7 +68,7 @@ fn add(config_dir: PathBuf, name: &str, json: bool) -> Result<()> {
         println!(
             "{}",
             serde_json::to_string_pretty(&added)
-                .map_err(|err| SupperError::Protocol(err.to_string()))?
+                .map_err(|err| OdinError::Protocol(err.to_string()))?
         );
     } else {
         println!("created {}", added.path.display());
@@ -83,7 +83,7 @@ fn validate(config_dir: PathBuf, json: bool) -> Result<()> {
         println!(
             "{}",
             serde_json::to_string_pretty(&report)
-                .map_err(|err| SupperError::Protocol(err.to_string()))?
+                .map_err(|err| OdinError::Protocol(err.to_string()))?
         );
     } else {
         println!("valid: {} service(s)", report.service_count);
@@ -95,10 +95,10 @@ fn validate(config_dir: PathBuf, json: bool) -> Result<()> {
 }
 
 async fn monitor(config_dir: PathBuf, socket: PathBuf) -> Result<()> {
-    supper::logging::detach_process_stdio()?;
+    odin::logging::detach_process_stdio()?;
     let services = config::load_services(&config_dir)?;
     for service in &services {
-        supper::logging::prepare_log_dirs(service)?;
+        odin::logging::prepare_log_dirs(service)?;
     }
     let supervisor = SupervisorHandle::new(services);
     supervisor.start_autostart().await?;
@@ -155,7 +155,7 @@ async fn reload(socket: &std::path::Path, json: bool) -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&summary)
-                        .map_err(|err| SupperError::Protocol(err.to_string()))?
+                        .map_err(|err| OdinError::Protocol(err.to_string()))?
                 );
             } else {
                 println!(
@@ -168,13 +168,13 @@ async fn reload(socket: &std::path::Path, json: bool) -> Result<()> {
             }
             Ok(())
         }
-        ControlResponse::Error { error } => Err(SupperError::Protocol(format!(
+        ControlResponse::Error { error } => Err(OdinError::Protocol(format!(
             "{}: {}",
             error.code, error.message
         ))),
         ControlResponse::Status { .. }
         | ControlResponse::Ok
-        | ControlResponse::Operation { .. } => Err(SupperError::Protocol(
+        | ControlResponse::Operation { .. } => Err(OdinError::Protocol(
             "unexpected control response".to_string(),
         )),
     }
@@ -188,7 +188,7 @@ async fn print_status(socket: &std::path::Path, service: Option<String>, json: b
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&services)
-                        .map_err(|err| SupperError::Protocol(err.to_string()))?
+                        .map_err(|err| OdinError::Protocol(err.to_string()))?
                 );
                 return Ok(());
             }
@@ -216,13 +216,13 @@ async fn print_status(socket: &std::path::Path, service: Option<String>, json: b
             }
             Ok(())
         }
-        ControlResponse::Error { error } => Err(SupperError::Protocol(format!(
+        ControlResponse::Error { error } => Err(OdinError::Protocol(format!(
             "{}: {}",
             error.code, error.message
         ))),
         ControlResponse::Ok
         | ControlResponse::Reload { .. }
-        | ControlResponse::Operation { .. } => Err(SupperError::Protocol(
+        | ControlResponse::Operation { .. } => Err(OdinError::Protocol(
             "unexpected control response".to_string(),
         )),
     }
@@ -241,25 +241,25 @@ async fn print_events(socket: &std::path::Path, service: &str, json: bool) -> Re
             let service = services
                 .into_iter()
                 .next()
-                .ok_or_else(|| SupperError::Protocol("missing service status".to_string()))?;
+                .ok_or_else(|| OdinError::Protocol("missing service status".to_string()))?;
             if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&service.event_history)
-                        .map_err(|err| SupperError::Protocol(err.to_string()))?
+                        .map_err(|err| OdinError::Protocol(err.to_string()))?
                 );
                 return Ok(());
             }
             print_event_table(&service.event_history);
             Ok(())
         }
-        ControlResponse::Error { error } => Err(SupperError::Protocol(format!(
+        ControlResponse::Error { error } => Err(OdinError::Protocol(format!(
             "{}: {}",
             error.code, error.message
         ))),
         ControlResponse::Ok
         | ControlResponse::Reload { .. }
-        | ControlResponse::Operation { .. } => Err(SupperError::Protocol(
+        | ControlResponse::Operation { .. } => Err(OdinError::Protocol(
             "unexpected control response".to_string(),
         )),
     }
@@ -299,18 +299,18 @@ async fn command_ok(socket: &std::path::Path, request: ControlRequest) -> Result
         ControlResponse::Ok => Ok(()),
         ControlResponse::Error { error } => {
             print_control_error_details(&error);
-            Err(SupperError::Protocol(format!(
+            Err(OdinError::Protocol(format!(
                 "{}: {}",
                 error.code, error.message
             )))
         }
         ControlResponse::Status { .. } | ControlResponse::Reload { .. } => Err(
-            SupperError::Protocol("unexpected control response".to_string()),
+            OdinError::Protocol("unexpected control response".to_string()),
         ),
     }
 }
 
-fn print_control_error_details(error: &supper::control::ControlError) {
+fn print_control_error_details(error: &odin::control::ControlError) {
     let Some(status) = &error.status else {
         return;
     };

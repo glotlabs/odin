@@ -1,51 +1,51 @@
-# supper
+# odin
 
-`supper` is a minimal Rust service supervisor for FreeBSD-hosted application processes.
+`odin` is a minimal Rust service supervisor for FreeBSD-hosted application processes.
 It is intended for long-running third-party apps you own, not for replacing `init`,
 `rc.d`, or system service management.
 
 ## Layout
 
-- Service configs: `/usr/local/etc/supper/services/*.toml`
-- Control socket: `/var/run/supper.sock`
-- Service logs: `/var/log/supper`
-- Future persistent state, if needed: `/var/db/supper`
+- Service configs: `/usr/local/etc/odin/services/*.toml`
+- Control socket: `/var/run/odin.sock`
+- Service logs: `/var/log/odin`
+- Future persistent state, if needed: `/var/db/odin`
 
 ## Commands
 
 Run the foreground supervisor:
 
 ```sh
-supper --config-dir /usr/local/etc/supper/services --socket /var/run/supper.sock monitor
+odin --config-dir /usr/local/etc/odin/services --socket /var/run/odin.sock monitor
 ```
 
 Query and control services:
 
 ```sh
-supper status
-supper status my-app
-supper --json status
-supper events my-app
-supper --json events my-app
-supper add my-app
-supper validate
-supper --json validate
-supper reload
-supper --json reload
-supper start my-app
-supper stop my-app
-supper restart my-app
+odin status
+odin status my-app
+odin --json status
+odin events my-app
+odin --json events my-app
+odin add my-app
+odin validate
+odin --json validate
+odin reload
+odin --json reload
+odin start my-app
+odin stop my-app
+odin restart my-app
 ```
 
-`supper status` includes the most recent restart reason in the human table.
-`supper --json status` includes bounded restart history for each service. The
+`odin status` includes the most recent restart reason in the human table.
+`odin --json status` includes bounded restart history for each service. The
 history keeps the last 64 restart records with timestamp, reason, previous PID,
 new PID, exit text when available, and backoff delay in milliseconds.
 
-`supper --json status` also includes bounded event history for each service. The
+`odin --json status` also includes bounded event history for each service. The
 event history keeps the last 128 lifecycle records, including starts, exits,
 stops, scheduled restarts, reload updates, reload-required restarts, removals,
-and health state changes. Use `supper events <service>` for a compact human
+and health state changes. Use `odin events <service>` for a compact human
 view of one service's event history.
 
 ## Service Config
@@ -67,8 +67,8 @@ restart_initial_delay = "1s"
 restart_max_delay = "30s"
 startup_timeout = "2s"
 
-stdout_log = "/var/log/supper/my-app.out.log"
-stderr_log = "/var/log/supper/my-app.err.log"
+stdout_log = "/var/log/odin/my-app.out.log"
+stderr_log = "/var/log/odin/my-app.err.log"
 
 [healthcheck]
 type = "tcp"
@@ -84,19 +84,19 @@ Restart policies are `never`, `on-failure`, and `always`.
 Health check types are `command`, `tcp`, and `http`.
 Health actions are `ignore`, `mark-unready`, and `restart`.
 
-`startup_timeout` controls start/restart acknowledgement. `supper start` and
-`supper restart` return success only after the process remains running through
+`startup_timeout` controls start/restart acknowledgement. `odin start` and
+`odin restart` return success only after the process remains running through
 that startup window. If it exits early, the command fails and includes current
 status, last exit, and recent events so you do not need to hunt through logs for
 basic startup failures.
 
 When a service has a health check, startup acknowledgement is stricter:
-`supper start` and `supper restart` return success only after the health check
+`odin start` and `odin restart` return success only after the health check
 passes within `startup_timeout`. `healthcheck.startup_grace` is respected before
 the first startup health probe. If the process stays alive but never becomes
 healthy, the command fails with health status and recent health events.
 
-`supper monitor` handles `SIGHUP` by reloading the config directory. Reloading:
+`odin monitor` handles `SIGHUP` by reloading the config directory. Reloading:
 
 - adds new services and starts them when `autostart = true`
 - applies live-only changes without restarting the process
@@ -107,7 +107,7 @@ healthy, the command fails with health status and recent health events.
 You can also trigger the same reload over the control socket:
 
 ```sh
-supper reload
+odin reload
 ```
 
 That is the preferred form for deploy scripts and CI jobs because it does not
@@ -117,18 +117,18 @@ Process-affecting fields are `command`, `args`, `cwd`, `env`, `user`, `group`,
 `umask`, `stdout_log`, and `stderr_log`. Restart policy, restart delays, stop
 timeout, autostart, and health-check changes are live updates.
 
-`supper validate` checks all service config files without starting anything. It
+`odin validate` checks all service config files without starting anything. It
 parses TOML, checks duplicate names, validates user/group lookups, verifies
 absolute command paths exist, checks `cwd`, and reports log directories that
 will be created by the monitor.
 
-`supper add <name>` creates `<config-dir>/<name>.toml` and refuses to overwrite
+`odin add <name>` creates `<config-dir>/<name>.toml` and refuses to overwrite
 an existing file. Values are derived from the name:
 
 - `command = "/usr/local/bin/<name>"`
 - `cwd = "/usr/local/<name>"`
-- `stdout_log = "/var/log/supper/<name>.out.log"`
-- `stderr_log = "/var/log/supper/<name>.err.log"`
+- `stdout_log = "/var/log/odin/<name>.out.log"`
+- `stderr_log = "/var/log/odin/<name>.err.log"`
 - `autostart = true`
 - `restart = "always"`
 
@@ -136,30 +136,30 @@ The generated file omits `user` and `group`; add them manually when the service
 should drop privileges to a dedicated account.
 
 Logs are appended directly to files. Log rotation is intentionally left to
-FreeBSD `newsyslog`; see `examples/newsyslog/supper.conf`.
+FreeBSD `newsyslog`; see `examples/newsyslog/odin.conf`.
 
 Managed services never inherit the caller's stdio. For each app process,
 `stdin` is opened from `/dev/null`; configured `stdout_log` and `stderr_log`
-receive output, and missing log paths fall back to `/dev/null`. `supper monitor`
+receive output, and missing log paths fall back to `/dev/null`. `odin monitor`
 also detaches its own stdio to `/dev/null` when it starts so it cannot keep a CI
 runner's log-capture pipes open. Short-lived control commands such as
-`supper restart my-app` still use the caller's stdio and then exit.
+`odin restart my-app` still use the caller's stdio and then exit.
 
 ## rc.d
 
-An example script is provided at `examples/rc.d/supper`. The supervisor itself
+An example script is provided at `examples/rc.d/odin`. The supervisor itself
 runs in the foreground; the example uses FreeBSD `daemon(8)` to background it
 and maintain a pidfile.
 
 Install sketch:
 
 ```sh
-install -m 0755 target/release/supper /usr/local/bin/supper
-install -d -m 0755 /usr/local/etc/supper/services
-install -d -m 0755 /var/log/supper
-install -m 0755 examples/rc.d/supper /usr/local/etc/rc.d/supper
-sysrc supper_enable=YES
-service supper start
+install -m 0755 target/release/odin /usr/local/bin/odin
+install -d -m 0755 /usr/local/etc/odin/services
+install -d -m 0755 /var/log/odin
+install -m 0755 examples/rc.d/odin /usr/local/etc/rc.d/odin
+sysrc odin_enable=YES
+service odin start
 ```
 
 ## Testing

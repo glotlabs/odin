@@ -9,4 +9,4 @@ pub mod service;
 pub mod status;
 pub mod supervisor;
 
-pub use error::{Result, SupperError};
+pub use error::{OdinError, Result};

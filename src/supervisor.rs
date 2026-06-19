@@ -9,7 +9,7 @@ use tokio::time;
 
 use crate::child;
 use crate::config::{HealthAction, ServiceConfig};
-use crate::error::{Result, SupperError};
+use crate::error::{OdinError, Result};
 use crate::service::ServiceRuntime;
 use crate::status::{
     HealthStatus, RestartHistoryEntry, RestartReason, ServiceEventKind, ServiceState,
@@ -59,7 +59,7 @@ impl SupervisorHandle {
     fn services(&self) -> Result<MutexGuard<'_, BTreeMap<String, ServiceRuntime>>> {
         self.inner
             .lock()
-            .map_err(|_| SupperError::Protocol("supervisor state lock poisoned".to_string()))
+            .map_err(|_| OdinError::Protocol("supervisor state lock poisoned".to_string()))
     }
 
     pub async fn start_autostart(&self) -> Result<()> {
@@ -82,7 +82,7 @@ impl SupervisorHandle {
         if let Some(name) = service {
             let service = services
                 .get(name)
-                .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?;
+                .ok_or_else(|| OdinError::ServiceNotFound(name.to_string()))?;
             return Ok(vec![service.status()]);
         }
         Ok(services.values().map(ServiceRuntime::status).collect())
@@ -93,12 +93,12 @@ impl SupervisorHandle {
             let mut services = self.services()?;
             let service = services
                 .get_mut(name)
-                .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?;
+                .ok_or_else(|| OdinError::ServiceNotFound(name.to_string()))?;
             if matches!(
                 service.state,
                 ServiceState::Running | ServiceState::Starting | ServiceState::Stopping
             ) {
-                return Err(SupperError::AlreadyRunning(name.to_string()));
+                return Err(OdinError::AlreadyRunning(name.to_string()));
             }
             service.desired_running = true;
             service.state = ServiceState::Starting;
@@ -116,7 +116,7 @@ impl SupervisorHandle {
             let mut services = self.services()?;
             let service = services
                 .get_mut(name)
-                .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?;
+                .ok_or_else(|| OdinError::ServiceNotFound(name.to_string()))?;
             service.desired_running = false;
             if service.pid.is_none() {
                 service.state = ServiceState::Stopped;
@@ -171,14 +171,14 @@ impl SupervisorHandle {
             let services = self.services()?;
             let service = services
                 .get(name)
-                .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?;
+                .ok_or_else(|| OdinError::ServiceNotFound(name.to_string()))?;
             service.pid
         };
         let exists_and_running = {
             let services = self.services()?;
             let service = services
                 .get(name)
-                .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?;
+                .ok_or_else(|| OdinError::ServiceNotFound(name.to_string()))?;
             service.pid.is_some()
         };
         if exists_and_running {
@@ -188,12 +188,12 @@ impl SupervisorHandle {
             let mut services = self.services()?;
             let service = services
                 .get_mut(name)
-                .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?;
+                .ok_or_else(|| OdinError::ServiceNotFound(name.to_string()))?;
             if matches!(
                 service.state,
                 ServiceState::Running | ServiceState::Starting | ServiceState::Stopping
             ) {
-                return Err(SupperError::AlreadyRunning(name.to_string()));
+                return Err(OdinError::AlreadyRunning(name.to_string()));
             }
             service.desired_running = true;
             service.state = ServiceState::Starting;
@@ -214,7 +214,7 @@ impl SupervisorHandle {
             let services = self.services()?;
             services
                 .get(name)
-                .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?
+                .ok_or_else(|| OdinError::ServiceNotFound(name.to_string()))?
                 .config
                 .clone()
         };
@@ -366,7 +366,7 @@ impl SupervisorHandle {
             let mut services = self.services()?;
             let service = services
                 .get_mut(&config.name)
-                .ok_or_else(|| SupperError::ServiceNotFound(config.name.clone()))?;
+                .ok_or_else(|| OdinError::ServiceNotFound(config.name.clone()))?;
             service.state = ServiceState::Running;
             service.pid = pid;
             service.generation += 1;
@@ -415,13 +415,13 @@ impl SupervisorHandle {
                 let services = self.services()?;
                 let service = services
                     .get(name)
-                    .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?;
+                    .ok_or_else(|| OdinError::ServiceNotFound(name.to_string()))?;
                 (service.status(), service.config.healthcheck.clone())
             };
 
             match status.state {
                 ServiceState::Failed | ServiceState::Stopped | ServiceState::BackingOff => {
-                    return Err(SupperError::Protocol(format!(
+                    return Err(OdinError::Protocol(format!(
                         "service {name} failed startup: state={:?}, last_exit={}",
                         status.state,
                         status.last_exit.unwrap_or_else(|| "unknown".to_string())
@@ -438,7 +438,7 @@ impl SupervisorHandle {
                     if !healthcheck.startup_grace.is_zero() {
                         let remaining = deadline.saturating_duration_since(time::Instant::now());
                         if remaining.is_zero() {
-                            return Err(SupperError::Protocol(format!(
+                            return Err(OdinError::Protocol(format!(
                                 "service {name} did not become healthy within {}ms; health={:?}",
                                 timeout.as_millis(),
                                 status.health
@@ -451,7 +451,7 @@ impl SupervisorHandle {
 
                 let remaining = deadline.saturating_duration_since(time::Instant::now());
                 if remaining.is_zero() {
-                    return Err(SupperError::Protocol(format!(
+                    return Err(OdinError::Protocol(format!(
                         "service {name} did not become healthy within {}ms; health={:?}",
                         timeout.as_millis(),
                         status.health
@@ -495,12 +495,12 @@ impl SupervisorHandle {
                     return Ok(());
                 }
                 if let Some(message) = last_health_error {
-                    return Err(SupperError::Protocol(format!(
+                    return Err(OdinError::Protocol(format!(
                         "service {name} did not become healthy within {}ms: {message}",
                         timeout.as_millis()
                     )));
                 }
-                return Err(SupperError::Protocol(format!(
+                return Err(OdinError::Protocol(format!(
                     "service {name} did not stay running within {}ms; state={:?}",
                     timeout.as_millis(),
                     status.state
@@ -518,7 +518,7 @@ impl SupervisorHandle {
     ) -> Result<OperationResult> {
         let status = self
             .status_now(name)?
-            .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?;
+            .ok_or_else(|| OdinError::ServiceNotFound(name.to_string()))?;
         Ok(OperationResult {
             service: name.to_string(),
             action,

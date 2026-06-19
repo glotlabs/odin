@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use supper::config::{RestartPolicy, ServiceConfig};
-use supper::privileges::Privileges;
+use odin::config::{RestartPolicy, ServiceConfig};
+use odin::privileges::Privileges;
 
 fn service_with_user(user: &str, group: Option<&str>) -> ServiceConfig {
     ServiceConfig {
@@ -37,10 +37,7 @@ fn drops_to_nobody() {
 
 #[test]
 fn unknown_user_fails() {
-    let err = Privileges::resolve(&service_with_user(
-        "supper-user-that-should-not-exist",
-        None,
-    ))
-    .expect_err("unknown user must fail");
+    let err = Privileges::resolve(&service_with_user("odin-user-that-should-not-exist", None))
+        .expect_err("unknown user must fail");
     assert!(err.to_string().contains("unknown user"));
 }

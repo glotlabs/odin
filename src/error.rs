@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
-pub enum SupperError {
+pub enum OdinError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("TOML parse error in {path}: {source}")]
@@ -29,4 +29,4 @@ pub enum SupperError {
     Http(#[from] reqwest::Error),
 }
 
-pub type Result<T> = std::result::Result<T, SupperError>;
+pub type Result<T> = std::result::Result<T, OdinError>;

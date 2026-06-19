@@ -7,5 +7,5 @@ restart = "always"
 restart_initial_delay = "1s"
 restart_max_delay = "30s"
 
-stdout_log = "/var/log/supper/hello.out.log"
-stderr_log = "/var/log/supper/hello.err.log"
+stdout_log = "/var/log/odin/hello.out.log"
+stderr_log = "/var/log/odin/hello.err.log"

@@ -3,7 +3,7 @@ use std::ffi::CString;
 use nix::unistd::{Gid, Group, Uid, User, setgid, setuid};
 
 use crate::config::ServiceConfig;
-use crate::error::{Result, SupperError};
+use crate::error::{OdinError, Result};
 
 #[derive(Debug, Clone)]
 pub struct Privileges {
@@ -16,14 +16,14 @@ impl Privileges {
         let user = match &config.user {
             Some(name) => Some(
                 User::from_name(name)?
-                    .ok_or_else(|| SupperError::Protocol(format!("unknown user: {name}")))?,
+                    .ok_or_else(|| OdinError::Protocol(format!("unknown user: {name}")))?,
             ),
             None => None,
         };
         let group = match &config.group {
             Some(name) => Some(
                 Group::from_name(name)?
-                    .ok_or_else(|| SupperError::Protocol(format!("unknown group: {name}")))?,
+                    .ok_or_else(|| OdinError::Protocol(format!("unknown group: {name}")))?,
             ),
             None => None,
         };
@@ -39,7 +39,7 @@ impl Privileges {
 
         if let Some(user) = &self.user {
             let name = CString::new(user.name.clone())
-                .map_err(|_| SupperError::Protocol("user name contains NUL".to_string()))?;
+                .map_err(|_| OdinError::Protocol("user name contains NUL".to_string()))?;
             init_supplementary_groups(&name, gid.unwrap_or(user.gid))?;
         }
 
@@ -59,7 +59,7 @@ fn init_supplementary_groups(user: &std::ffi::CStr, group: Gid) -> Result<()> {
     if rc == 0 {
         Ok(())
     } else {
-        Err(SupperError::Io(std::io::Error::last_os_error()))
+        Err(OdinError::Io(std::io::Error::last_os_error()))
     }
 }
 

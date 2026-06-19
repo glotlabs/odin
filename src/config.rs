@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Result, SupperError};
+use crate::error::{OdinError, Result};
 use crate::privileges::Privileges;
 
 fn default_autostart() -> bool {
@@ -174,7 +174,7 @@ pub fn validate_config_dir(config_dir: &Path) -> Result<ValidationReport> {
 
 pub fn load_service(path: &Path) -> Result<ServiceConfig> {
     let raw = fs::read_to_string(path)?;
-    let service: ServiceConfig = toml::from_str(&raw).map_err(|source| SupperError::Toml {
+    let service: ServiceConfig = toml::from_str(&raw).map_err(|source| OdinError::Toml {
         path: path.to_path_buf(),
         source,
     })?;
@@ -219,8 +219,8 @@ pub fn derive_service_config(name: &str) -> ServiceConfig {
         restart_max_delay: default_max_delay(),
         stop_timeout: default_stop_timeout(),
         startup_timeout: default_startup_timeout(),
-        stdout_log: Some(PathBuf::from(format!("/var/log/supper/{name}.out.log"))),
-        stderr_log: Some(PathBuf::from(format!("/var/log/supper/{name}.err.log"))),
+        stdout_log: Some(PathBuf::from(format!("/var/log/odin/{name}.out.log"))),
+        stderr_log: Some(PathBuf::from(format!("/var/log/odin/{name}.err.log"))),
         healthcheck: None,
     }
 }
@@ -229,14 +229,14 @@ fn validate_unique_names(services: &[ServiceConfig]) -> Result<()> {
     let mut names = HashSet::new();
     for service in services {
         if !names.insert(service.name.clone()) {
-            return Err(SupperError::DuplicateService(service.name.clone()));
+            return Err(OdinError::DuplicateService(service.name.clone()));
         }
     }
     Ok(())
 }
 
 fn validate_service(path: &Path, service: &ServiceConfig) -> Result<()> {
-    let invalid = |message: &str| SupperError::InvalidConfig {
+    let invalid = |message: &str| OdinError::InvalidConfig {
         path: path.to_path_buf(),
         message: message.to_string(),
     };
@@ -281,19 +281,19 @@ fn validate_service(path: &Path, service: &ServiceConfig) -> Result<()> {
 
 fn validate_service_name(name: &str) -> Result<()> {
     if name.trim().is_empty() {
-        return Err(SupperError::InvalidConfig {
+        return Err(OdinError::InvalidConfig {
             path: PathBuf::from("<service-name>"),
             message: "name must not be empty".to_string(),
         });
     }
     if name.contains('/') || name.contains('\0') {
-        return Err(SupperError::InvalidConfig {
+        return Err(OdinError::InvalidConfig {
             path: PathBuf::from("<service-name>"),
             message: "name must not contain '/' or NUL".to_string(),
         });
     }
     if name == "." || name == ".." {
-        return Err(SupperError::InvalidConfig {
+        return Err(OdinError::InvalidConfig {
             path: PathBuf::from("<service-name>"),
             message: "name must not be '.' or '..'".to_string(),
         });
@@ -302,7 +302,7 @@ fn validate_service_name(name: &str) -> Result<()> {
 }
 
 fn validate_runtime_inputs(service: &ServiceConfig) -> Result<()> {
-    let invalid = |message: String| SupperError::InvalidConfig {
+    let invalid = |message: String| OdinError::InvalidConfig {
         path: PathBuf::from(format!("<service:{}>", service.name)),
         message,
     };
@@ -361,7 +361,7 @@ fn collect_log_warnings(
         .flatten()
     {
         if !path.is_absolute() {
-            return Err(SupperError::InvalidConfig {
+            return Err(OdinError::InvalidConfig {
                 path: PathBuf::from(format!("<service:{}>", service.name)),
                 message: format!("log path must be absolute: {}", path.display()),
             });
@@ -370,7 +370,7 @@ fn collect_log_warnings(
             continue;
         };
         if parent.exists() && !parent.is_dir() {
-            return Err(SupperError::InvalidConfig {
+            return Err(OdinError::InvalidConfig {
                 path: PathBuf::from(format!("<service:{}>", service.name)),
                 message: format!("log parent is not a directory: {}", parent.display()),
             });
