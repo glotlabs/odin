@@ -333,17 +333,21 @@ async fn print_status(socket: &std::path::Path, service: Option<String>, json: b
                 return Ok(());
             }
             println!(
-                "{:<24} {:<12} {:<8} {:<8} {:<16} HEALTH",
-                "NAME", "STATE", "PID", "RESTARTS", "LAST-RESTART"
+                "{:<24} {:<12} {:<8} {:<10} {:<8} {:<16} HEALTH",
+                "NAME", "STATE", "PID", "UPTIME", "RESTARTS", "LAST-RESTART"
             );
             for service in services {
                 println!(
-                    "{:<24} {:<12} {:<8} {:<8} {:<16} {}",
+                    "{:<24} {:<12} {:<8} {:<10} {:<8} {:<16} {}",
                     service.name,
                     json_display(service.state),
                     service
                         .pid
                         .map(|pid| pid.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    service
+                        .uptime_seconds
+                        .map(format_duration)
                         .unwrap_or_else(|| "-".to_string()),
                     service.restart_count,
                     service
@@ -365,6 +369,22 @@ async fn print_status(socket: &std::path::Path, service: Option<String>, json: b
         | ControlResponse::Operation { .. } => Err(OdinError::Protocol(
             "unexpected control response".to_string(),
         )),
+    }
+}
+
+fn format_duration(seconds: u64) -> String {
+    let minutes = seconds / 60;
+    let hours = minutes / 60;
+    let days = hours / 24;
+
+    if days > 0 {
+        format!("{}d{}h", days, hours % 24)
+    } else if hours > 0 {
+        format!("{}h{}m", hours, minutes % 60)
+    } else if minutes > 0 {
+        format!("{}m{}s", minutes, seconds % 60)
+    } else {
+        format!("{seconds}s")
     }
 }
 

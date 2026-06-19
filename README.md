@@ -37,7 +37,8 @@ odin stop my-app
 odin restart my-app
 ```
 
-`odin status` includes the most recent restart reason in the human table.
+`odin status` includes current uptime and the most recent restart reason in the
+human table.
 `odin --json status` includes bounded restart history for each service. The
 history keeps the last 64 restart records with timestamp, reason, previous PID,
 new PID, exit text when available, and backoff delay in milliseconds.

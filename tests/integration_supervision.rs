@@ -1322,6 +1322,66 @@ autostart = false
 }
 
 #[tokio::test]
+async fn status_cli_text_reports_uptime() {
+    let dir = temp_dir("status-cli-uptime");
+    let socket = dir.join("odin.sock");
+    let path = write_service(
+        &dir,
+        "status-web",
+        r#"
+name = "status-web"
+command = "/bin/sh"
+args = ["-c", "sleep 60"]
+autostart = false
+restart = "never"
+startup_timeout = "100ms"
+stop_timeout = "100ms"
+"#,
+    );
+    let service = config::load_service(&path).expect("service config should load");
+    let supervisor = SupervisorHandle::new(vec![service]);
+    supervisor.start("status-web").await.expect("start service");
+
+    let server_supervisor = supervisor.clone();
+    let server_socket = socket.clone();
+    let server_config_dir = dir.clone();
+    let server = tokio::spawn(async move {
+        let _ = odin::control::serve(&server_socket, server_config_dir, server_supervisor).await;
+    });
+
+    for _ in 0..100 {
+        if UnixStream::connect(&socket).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_odin"))
+        .arg("--socket")
+        .arg(&socket)
+        .arg("status")
+        .output()
+        .await
+        .expect("run odin status");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    assert!(stdout.contains("UPTIME"));
+    assert!(stdout.contains("status-web"));
+    assert!(stdout.contains("running"));
+    let row = stdout
+        .lines()
+        .find(|line| line.starts_with("status-web"))
+        .expect("status row should be present");
+    let columns = row.split_whitespace().collect::<Vec<_>>();
+    assert!(columns[3].ends_with('s') || columns[3].contains('m') || columns[3].contains('h'));
+
+    supervisor.stop("status-web").await.expect("stop service");
+    server.abort();
+}
+
+#[tokio::test]
 async fn control_reload_loads_new_service_from_config_dir() {
     let dir = temp_dir("control-reload");
     let socket = dir.join("odin.sock");
