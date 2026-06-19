@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use odin::config::{self, ConfigDiagnostic, ConfigDiagnostics, ConfigSeverity, ValidationReport};
 use odin::control::{self, ControlRequest, ControlResponse};
-use odin::status::{ServiceEvent, ServiceState};
-use odin::supervisor::{OperationAction, OperationPhase, SupervisorHandle};
+use odin::labels::json_display;
+use odin::status::ServiceEvent;
+use odin::supervisor::SupervisorHandle;
 use odin::{OdinError, Result};
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -330,9 +331,9 @@ async fn print_status(socket: &std::path::Path, service: Option<String>, json: b
             );
             for service in services {
                 println!(
-                    "{:<24} {:<12} {:<8} {:<8} {:<16} {:?}",
+                    "{:<24} {:<12} {:<8} {:<8} {:<16} {}",
                     service.name,
-                    format!("{:?}", service.state),
+                    json_display(service.state),
                     service
                         .pid
                         .map(|pid| pid.to_string())
@@ -341,9 +342,9 @@ async fn print_status(socket: &std::path::Path, service: Option<String>, json: b
                     service
                         .restart_history
                         .last()
-                        .map(|entry| format!("{:?}", entry.reason))
+                        .map(|entry| json_display(entry.reason))
                         .unwrap_or_else(|| "-".to_string()),
-                    service.health
+                    json_display(service.health)
                 );
             }
             Ok(())
@@ -403,7 +404,7 @@ fn print_event_table(events: &[ServiceEvent]) {
         println!(
             "{:<12} {:<24} {}",
             event.at_unix_seconds,
-            format!("{:?}", event.kind),
+            json_display(event.kind),
             event.message
         );
     }
@@ -424,8 +425,8 @@ async fn command_ok(socket: &std::path::Path, request: ControlRequest, json: boo
                 "{}: {} (action={}, state={}, pid={})",
                 result.service,
                 result.message,
-                operation_action_label(result.action),
-                service_state_label(result.status.state),
+                json_display(result.action),
+                json_display(result.status.state),
                 result
                     .status
                     .pid
@@ -464,13 +465,16 @@ fn print_control_error_details(error: &odin::control::ControlError) {
         eprintln!(
             "{}: action={}, phase={}, pid={}, state={}, timeout_ms={}",
             operation.service,
-            operation_action_label(operation.action),
-            operation_phase_label(operation.phase),
+            json_display(operation.action),
+            json_display(operation.phase),
             operation
                 .pid
                 .map(|pid| pid.to_string())
                 .unwrap_or_else(|| "-".to_string()),
-            operation.state.map(service_state_label).unwrap_or("-"),
+            operation
+                .state
+                .map(json_display)
+                .unwrap_or_else(|| "-".to_string()),
             operation
                 .timeout_millis
                 .map(|timeout| timeout.to_string())
@@ -484,7 +488,7 @@ fn print_control_error_details(error: &odin::control::ControlError) {
     eprintln!(
         "{}: state={}, pid={}, restarts={}",
         status.name,
-        service_state_label(status.state),
+        json_display(status.state),
         status
             .pid
             .map(|pid| pid.to_string())
@@ -498,37 +502,10 @@ fn print_control_error_details(error: &odin::control::ControlError) {
     let start = event_count.saturating_sub(5);
     for event in &status.event_history[start..] {
         eprintln!(
-            "event: {} {:?}: {}",
-            event.at_unix_seconds, event.kind, event.message
+            "event: {} {}: {}",
+            event.at_unix_seconds,
+            json_display(event.kind),
+            event.message
         );
-    }
-}
-
-fn operation_action_label(action: OperationAction) -> &'static str {
-    match action {
-        OperationAction::Start => "start",
-        OperationAction::Stop => "stop",
-        OperationAction::Restart => "restart",
-    }
-}
-
-fn operation_phase_label(phase: OperationPhase) -> &'static str {
-    match phase {
-        OperationPhase::StateCheck => "state-check",
-        OperationPhase::Startup => "startup",
-        OperationPhase::Stop => "stop",
-        OperationPhase::Sigkill => "sigkill",
-        OperationPhase::Runtime => "runtime",
-    }
-}
-
-fn service_state_label(state: ServiceState) -> &'static str {
-    match state {
-        ServiceState::Stopped => "stopped",
-        ServiceState::Starting => "starting",
-        ServiceState::Running => "running",
-        ServiceState::Stopping => "stopping",
-        ServiceState::Failed => "failed",
-        ServiceState::BackingOff => "backing-off",
     }
 }

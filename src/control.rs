@@ -56,6 +56,7 @@ pub struct ControlError {
     pub config_diagnostics: Option<Vec<ConfigDiagnostic>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<OperationDiagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<ServiceStatus>,
 }
 
@@ -65,11 +66,11 @@ pub struct OperationDiagnostic {
     pub action: OperationAction,
     pub phase: OperationPhase,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<ServiceState>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_millis: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent_events: Vec<ServiceEvent>,

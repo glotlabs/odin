@@ -238,8 +238,7 @@ fn control_config_error_schema_uses_config_diagnostics() {
                         "message": "command must be an absolute path",
                         "help": "Set command to an absolute path such as \"/usr/local/bin/app\"."
                     }
-                ],
-                "status": null
+                ]
             }
         })
     );

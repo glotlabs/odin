@@ -350,16 +350,16 @@ fn load_service_with_diagnostics(
         Err(err) => {
             return (
                 None,
-                vec![diagnostic_with_location(
-                    ConfigSeverity::Error,
+                vec![diagnostic_with_location(DiagnosticInput {
+                    severity: ConfigSeverity::Error,
                     path,
-                    None,
-                    None,
-                    None,
-                    None,
-                    format!("failed to read config file: {err}"),
-                    Some("Check that the file exists and is readable by odin.".to_string()),
-                )],
+                    line: None,
+                    column: None,
+                    service: None,
+                    field: None,
+                    message: format!("failed to read config file: {err}"),
+                    help: Some("Check that the file exists and is readable by odin.".to_string()),
+                })],
             );
         }
     };
@@ -374,16 +374,16 @@ fn load_service_with_diagnostics(
                 .unwrap_or((None, None));
             return (
                 None,
-                vec![diagnostic_with_location(
-                    ConfigSeverity::Error,
+                vec![diagnostic_with_location(DiagnosticInput {
+                    severity: ConfigSeverity::Error,
                     path,
                     line,
                     column,
-                    None,
-                    None,
-                    format!("TOML parse error: {source}"),
-                    Some("Fix the TOML syntax or value type at this location.".to_string()),
-                )],
+                    service: None,
+                    field: None,
+                    message: format!("TOML parse error: {source}"),
+                    help: Some("Fix the TOML syntax or value type at this location.".to_string()),
+                })],
             );
         }
     };
@@ -798,28 +798,39 @@ fn diagnostic(
     message: impl Into<String>,
     help: Option<impl Into<String>>,
 ) -> ConfigDiagnostic {
-    diagnostic_with_location(severity, path, None, None, service, field, message, help)
-}
-
-fn diagnostic_with_location(
-    severity: ConfigSeverity,
-    path: &Path,
-    line: Option<usize>,
-    column: Option<usize>,
-    service: Option<&str>,
-    field: Option<&str>,
-    message: impl Into<String>,
-    help: Option<impl Into<String>>,
-) -> ConfigDiagnostic {
-    ConfigDiagnostic {
+    diagnostic_with_location(DiagnosticInput {
         severity,
-        path: path.to_path_buf(),
-        line,
-        column,
-        service: service.map(ToString::to_string),
-        field: field.map(ToString::to_string),
+        path,
+        line: None,
+        column: None,
+        service,
+        field,
         message: message.into(),
         help: help.map(Into::into),
+    })
+}
+
+struct DiagnosticInput<'a> {
+    severity: ConfigSeverity,
+    path: &'a Path,
+    line: Option<usize>,
+    column: Option<usize>,
+    service: Option<&'a str>,
+    field: Option<&'a str>,
+    message: String,
+    help: Option<String>,
+}
+
+fn diagnostic_with_location(input: DiagnosticInput<'_>) -> ConfigDiagnostic {
+    ConfigDiagnostic {
+        severity: input.severity,
+        path: input.path.to_path_buf(),
+        line: input.line,
+        column: input.column,
+        service: input.service.map(ToString::to_string),
+        field: input.field.map(ToString::to_string),
+        message: input.message,
+        help: input.help,
     }
 }
 

@@ -10,6 +10,7 @@ use tokio::time;
 use crate::child;
 use crate::config::{HealthAction, ServiceConfig};
 use crate::error::{OdinError, Result};
+use crate::labels::json_display;
 use crate::service::ServiceRuntime;
 use crate::status::{
     HealthStatus, RestartHistoryEntry, RestartReason, ServiceEventKind, ServiceState,
@@ -490,8 +491,8 @@ impl SupervisorHandle {
                         action,
                         phase: OperationPhase::Startup,
                         message: format!(
-                            "service {name} failed startup: state={:?}, last_exit={}",
-                            status.state,
+                            "service {name} failed startup: state={}, last_exit={}",
+                            json_display(status.state),
                             status.last_exit.unwrap_or_else(|| "unknown".to_string())
                         ),
                         pid: status.pid,
@@ -515,9 +516,9 @@ impl SupervisorHandle {
                                 action,
                                 phase: OperationPhase::Startup,
                                 message: format!(
-                                    "service {name} did not become healthy within {}ms; health={:?}",
+                                    "service {name} did not become healthy within {}ms; health={}",
                                     timeout.as_millis(),
-                                    status.health
+                                    json_display(&status.health)
                                 ),
                                 pid: status.pid,
                                 timeout_millis: Some(timeout.as_millis() as u64),
@@ -536,9 +537,9 @@ impl SupervisorHandle {
                         action,
                         phase: OperationPhase::Startup,
                         message: format!(
-                            "service {name} did not become healthy within {}ms; health={:?}",
+                            "service {name} did not become healthy within {}ms; health={}",
                             timeout.as_millis(),
-                            status.health
+                            json_display(&status.health)
                         ),
                         pid: status.pid,
                         timeout_millis: Some(timeout.as_millis() as u64),
@@ -601,9 +602,9 @@ impl SupervisorHandle {
                     action,
                     phase: OperationPhase::Startup,
                     message: format!(
-                        "service {name} did not stay running within {}ms; state={:?}",
+                        "service {name} did not stay running within {}ms; state={}",
                         timeout.as_millis(),
-                        status.state,
+                        json_display(status.state),
                     ),
                     pid: status.pid,
                     timeout_millis: Some(timeout.as_millis() as u64),

@@ -237,12 +237,12 @@ when known, and the most recent lifecycle events:
 ```json
 {
   "code": "operation-failed",
-  "message": "service web failed startup: state=Failed, last_exit=exit status: 42",
+  "message": "service web failed startup: state=failed, last_exit=exit status: 42",
   "operation": {
     "service": "web",
     "action": "start",
     "phase": "startup",
-    "message": "service web failed startup: state=Failed, last_exit=exit status: 42",
+    "message": "service web failed startup: state=failed, last_exit=exit status: 42",
     "state": "failed",
     "recent_events": []
   }
@@ -255,7 +255,7 @@ The Unix socket protocol starts at `version = 1`. Each request and response is a
 single JSON envelope followed by a newline:
 
 ```json
-{ "version": 1, "request": { "type": "status" } }
+{ "version": 1, "command": "start", "service": "web" }
 ```
 
 Successful control operations return typed response bodies such as `status`,
@@ -267,14 +267,12 @@ Errors use one shape for all control commands:
 ```json
 {
   "code": "operation-failed",
-  "message": "service web failed startup: state=Failed, last_exit=exit status: 42",
-  "config_diagnostics": null,
+  "message": "service web failed startup: state=failed, last_exit=exit status: 42",
   "operation": {
     "service": "web",
     "action": "start",
     "phase": "startup",
-    "message": "service web failed startup: state=Failed, last_exit=exit status: 42",
-    "pid": null,
+    "message": "service web failed startup: state=failed, last_exit=exit status: 42",
     "state": "failed",
     "timeout_millis": 2000,
     "recent_events": []
@@ -286,9 +284,26 @@ Errors use one shape for all control commands:
 }
 ```
 
-`config_diagnostics` is populated for reload-time config failures. `operation`
-and `status` are populated for start, stop, and restart failures when the
-monitor can identify the affected service.
+Optional fields are omitted when absent. `config_diagnostics` is populated for
+reload-time config failures. `operation` and `status` are populated for start,
+stop, and restart failures when the monitor can identify the affected service.
+
+Protocol values in v1:
+
+- Request `command`: `status`, `reload`, `start`, `stop`, `restart`
+- Response `kind`: `status`, `reload`, `operation`, `ok`, `error`
+- Operation `action`: `start`, `stop`, `restart`
+- Operation `phase`: `state-check`, `startup`, `stop`, `sigkill`, `runtime`
+- Error `code`: `service-not-found`, `already-running`, `not-running`,
+  `operation-failed`, `invalid-config`, `duplicate-service`, `toml`,
+  `toml-serialize`, `io`, `nix`, `http`, `protocol`, `unsupported-version`
+- Service `state`: `stopped`, `starting`, `running`, `stopping`, `failed`,
+  `backing-off`
+- Health `health`: `unknown`, `healthy`, or an object keyed by `unhealthy` or
+  `unready` with the reason string
+- Event `kind`: `started`, `exited`, `stopped`, `stop-requested`,
+  `restart-scheduled`, `restarted`, `health-changed`, `reload-updated`,
+  `reload-restart-required`, `removed`, `added`
 
 ## rc.d
 
