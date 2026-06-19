@@ -31,7 +31,6 @@ enum Command {
     Add { name: String },
     Validate,
     Reload,
-    List,
     Status { service: Option<String> },
     Events { service: String },
     Start { service: String },
@@ -59,7 +58,6 @@ async fn run() -> Result<()> {
         Command::Add { name } => add(cli.config_dir, &name, cli.json),
         Command::Validate => validate(cli.config_dir, cli.json),
         Command::Reload => reload(&cli.socket, cli.json).await,
-        Command::List => print_status(&cli.socket, None, cli.json).await,
         Command::Status { service } => print_status(&cli.socket, service, cli.json).await,
         Command::Events { service } => print_events(&cli.socket, &service, cli.json).await,
         Command::Start { service } => {
@@ -84,7 +82,7 @@ fn add(config_dir: PathBuf, name: &str, json: bool) -> Result<()> {
         );
     } else {
         println!("created {}", added.path.display());
-        println!("reload the monitor with SIGHUP to apply the new service");
+        println!("run `odin reload` to apply the new service");
     }
     Ok(())
 }

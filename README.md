@@ -42,11 +42,12 @@ odin restart my-app
 history keeps the last 64 restart records with timestamp, reason, previous PID,
 new PID, exit text when available, and backoff delay in milliseconds.
 
-`odin --json status` also includes bounded event history for each service. The
+`odin --json status` also includes bounded event history for each retained service. The
 event history keeps the last 128 lifecycle records, including starts, exits,
-stops, scheduled restarts, reload updates, reload-required restarts, removals,
-and health state changes. Use `odin events <service>` for a compact human
-view of one service's event history.
+stops, scheduled restarts, reload updates, reload-required restarts, and health
+state changes. Reload removals are reported in the reload summary; once a
+service is removed, its per-service history is no longer queryable. Use
+`odin events <service>` for a compact human view of one service's event history.
 
 ## Service Config
 
@@ -83,6 +84,7 @@ action = "restart"
 Restart policies are `never`, `on-failure`, and `always`.
 Health check types are `command`, `tcp`, and `http`.
 Health actions are `ignore`, `mark-unready`, and `restart`.
+TCP health check `host` accepts an IP address or DNS name.
 
 `startup_timeout` controls start/restart acknowledgement. `odin start` and
 `odin restart` return success only after the process remains running through
@@ -200,7 +202,7 @@ waits for `stop_timeout`. If the process group is still present, it sends
 `SIGKILL`, records the escalation in the service event history, and reports:
 
 ```text
-my-app: service stopped after SIGKILL escalation (Stopped, pid=-)
+my-app: service stopped after SIGKILL escalation (action=stop, state=stopped, pid=-)
 last exit: signal: 9 (SIGKILL)
 ```
 

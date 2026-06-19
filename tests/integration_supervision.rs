@@ -461,11 +461,10 @@ command = "relative-command"
     assert_eq!(payload["errors"][0]["line"], 3);
     assert_eq!(payload["errors"][0]["column"], 11);
     assert!(
-        payload["diagnostics"]
+        !payload["diagnostics"]
             .as_array()
             .expect("diagnostics array")
-            .len()
-            >= 1
+            .is_empty()
     );
 }
 
@@ -1230,7 +1229,7 @@ async fn tcp_health_check_success() {
         kind: HealthCheckKind::Tcp,
         command: None,
         args: Vec::new(),
-        host: Some("127.0.0.1".to_string()),
+        host: Some("localhost".to_string()),
         port: Some(port),
         url: None,
         interval: Duration::from_secs(1),

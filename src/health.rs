@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use std::process::Stdio;
 
 use tokio::net::TcpStream;
@@ -53,10 +52,7 @@ async fn check_tcp(config: &HealthCheckConfig) -> Result<()> {
     let port = config
         .port
         .ok_or_else(|| OdinError::Protocol("missing tcp healthcheck port".to_string()))?;
-    let addr: SocketAddr = format!("{host}:{port}")
-        .parse()
-        .map_err(|err| OdinError::Protocol(format!("invalid tcp healthcheck address: {err}")))?;
-    time::timeout(config.timeout, TcpStream::connect(addr))
+    time::timeout(config.timeout, TcpStream::connect((host.as_str(), port)))
         .await
         .map_err(|_| OdinError::Protocol("tcp healthcheck timed out".to_string()))??;
     Ok(())
