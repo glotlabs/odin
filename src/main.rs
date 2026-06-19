@@ -286,10 +286,24 @@ async fn reload(socket: &std::path::Path, json: bool) -> Result<()> {
             }
             Ok(())
         }
-        ControlResponse::Error { error } => Err(OdinError::Protocol(format!(
-            "{}: {}",
-            error.code, error.message
-        ))),
+        ControlResponse::Error { error } => {
+            if let Some(diagnostics) = &error.diagnostics {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&error)
+                            .map_err(|err| OdinError::Protocol(err.to_string()))?
+                    );
+                } else {
+                    print_diagnostics(diagnostics);
+                }
+                std::process::exit(1);
+            }
+            Err(OdinError::Protocol(format!(
+                "{}: {}",
+                error.code, error.message
+            )))
+        }
         ControlResponse::Status { .. }
         | ControlResponse::Ok
         | ControlResponse::Operation { .. } => Err(OdinError::Protocol(

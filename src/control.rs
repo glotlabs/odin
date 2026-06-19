@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
+use crate::config::ConfigDiagnostic;
 use crate::error::{OdinError, Result};
 use crate::status::ServiceStatus;
 use crate::supervisor::{OperationResult, ReloadSummary, SupervisorHandle};
@@ -48,6 +49,8 @@ pub enum ControlResponse {
 pub struct ControlError {
     pub code: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<Vec<ConfigDiagnostic>>,
     pub status: Option<ServiceStatus>,
 }
 
@@ -113,6 +116,7 @@ async fn handle_connection(
             error: ControlError {
                 code: "unsupported-version".to_string(),
                 message: format!("unsupported control request version: {}", envelope.version),
+                diagnostics: None,
                 status: None,
             },
         }
@@ -173,11 +177,7 @@ async fn dispatch(
     match result {
         Ok(response) => response,
         Err(err) => ControlResponse::Error {
-            error: ControlError {
-                code: error_code(&err).to_string(),
-                message: err.to_string(),
-                status: None,
-            },
+            error: control_error(&err, None),
         },
     }
 }
@@ -196,13 +196,22 @@ async fn operation_response(
                 .ok()
                 .and_then(|mut statuses| statuses.pop());
             ControlResponse::Error {
-                error: ControlError {
-                    code: error_code(&err).to_string(),
-                    message: err.to_string(),
-                    status,
-                },
+                error: control_error(&err, status),
             }
         }
+    }
+}
+
+fn control_error(err: &OdinError, status: Option<ServiceStatus>) -> ControlError {
+    let diagnostics = match err {
+        OdinError::ConfigDiagnostics(diagnostics) => Some(diagnostics.diagnostics.clone()),
+        _ => None,
+    };
+    ControlError {
+        code: error_code(err).to_string(),
+        message: err.to_string(),
+        diagnostics,
+        status,
     }
 }
 

@@ -1131,6 +1131,59 @@ stop_timeout = "100ms"
 }
 
 #[tokio::test]
+async fn control_reload_error_includes_config_diagnostics() {
+    let dir = temp_dir("control-reload-diagnostics");
+    let socket = dir.join("odin.sock");
+    let supervisor = SupervisorHandle::new(Vec::new());
+    let server_supervisor = supervisor.clone();
+    let server_socket = socket.clone();
+    let server_config_dir = dir.clone();
+
+    let server = tokio::spawn(async move {
+        let _ = odin::control::serve(&server_socket, server_config_dir, server_supervisor).await;
+    });
+
+    for _ in 0..100 {
+        if UnixStream::connect(&socket).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    write_service(
+        &dir,
+        "bad-reload",
+        r#"
+name = "bad-reload"
+command = "/bin/sh"
+restart_initial_delay = "10s"
+restart_max_delay = "1s"
+"#,
+    );
+
+    let response = odin::control::request(&socket, ControlRequest::Reload)
+        .await
+        .expect("reload request should receive response");
+
+    match response {
+        ControlResponse::Error { error } => {
+            assert_eq!(error.code, "invalid-config");
+            let diagnostics = error.diagnostics.expect("config diagnostics");
+            let delay = diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.field.as_deref() == Some("restart_initial_delay"))
+                .expect("restart delay diagnostic");
+            assert_eq!(delay.line, Some(4));
+            assert_eq!(delay.column, Some(25));
+            assert!(delay.message.contains("restart_initial_delay"));
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn control_start_failure_includes_status_feedback() {
     let dir = temp_dir("control-start-failure");
     let socket = dir.join("odin.sock");
