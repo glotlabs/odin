@@ -408,13 +408,15 @@ impl SupervisorHandle {
 
     async fn wait_for_startup(&self, name: &str, timeout: Duration) -> Result<()> {
         let deadline = time::Instant::now() + timeout;
+        let mut startup_grace_applied = false;
+        let mut last_health_error = None;
         loop {
-            let status = {
+            let (status, healthcheck) = {
                 let services = self.services()?;
                 let service = services
                     .get(name)
                     .ok_or_else(|| SupperError::ServiceNotFound(name.to_string()))?;
-                service.status()
+                (service.status(), service.config.healthcheck.clone())
             };
 
             match status.state {
@@ -429,9 +431,74 @@ impl SupervisorHandle {
                 ServiceState::Running => {}
             }
 
+            let has_healthcheck = healthcheck.is_some();
+            if let Some(mut healthcheck) = healthcheck {
+                if !startup_grace_applied {
+                    startup_grace_applied = true;
+                    if !healthcheck.startup_grace.is_zero() {
+                        let remaining = deadline.saturating_duration_since(time::Instant::now());
+                        if remaining.is_zero() {
+                            return Err(SupperError::Protocol(format!(
+                                "service {name} did not become healthy within {}ms; health={:?}",
+                                timeout.as_millis(),
+                                status.health
+                            )));
+                        }
+                        time::sleep(healthcheck.startup_grace.min(remaining)).await;
+                        continue;
+                    }
+                }
+
+                let remaining = deadline.saturating_duration_since(time::Instant::now());
+                if remaining.is_zero() {
+                    return Err(SupperError::Protocol(format!(
+                        "service {name} did not become healthy within {}ms; health={:?}",
+                        timeout.as_millis(),
+                        status.health
+                    )));
+                }
+                healthcheck.timeout = healthcheck.timeout.min(remaining);
+
+                match crate::health::check(&healthcheck).await {
+                    Ok(()) => {
+                        let mut services = self.services()?;
+                        if let Some(service) = services.get_mut(name) {
+                            service.health_failures = 0;
+                            if !matches!(service.health, HealthStatus::Healthy) {
+                                service.record_event(
+                                    ServiceEventKind::HealthChanged,
+                                    "startup health check passed",
+                                );
+                            }
+                            service.health = HealthStatus::Healthy;
+                        }
+                        return Ok(());
+                    }
+                    Err(err) => {
+                        let message = err.to_string();
+                        last_health_error = Some(message.clone());
+                        let mut services = self.services()?;
+                        if let Some(service) = services.get_mut(name) {
+                            service.health_failures += 1;
+                            service.health = HealthStatus::Unhealthy(message.clone());
+                            service.record_event(
+                                ServiceEventKind::HealthChanged,
+                                format!("startup health check failed: {message}"),
+                            );
+                        }
+                    }
+                }
+            }
+
             if time::Instant::now() >= deadline {
-                if status.state == ServiceState::Running {
+                if !has_healthcheck && status.state == ServiceState::Running {
                     return Ok(());
+                }
+                if let Some(message) = last_health_error {
+                    return Err(SupperError::Protocol(format!(
+                        "service {name} did not become healthy within {}ms: {message}",
+                        timeout.as_millis()
+                    )));
                 }
                 return Err(SupperError::Protocol(format!(
                     "service {name} did not stay running within {}ms; state={:?}",

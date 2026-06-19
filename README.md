@@ -90,6 +90,12 @@ that startup window. If it exits early, the command fails and includes current
 status, last exit, and recent events so you do not need to hunt through logs for
 basic startup failures.
 
+When a service has a health check, startup acknowledgement is stricter:
+`supper start` and `supper restart` return success only after the health check
+passes within `startup_timeout`. `healthcheck.startup_grace` is respected before
+the first startup health probe. If the process stays alive but never becomes
+healthy, the command fails with health status and recent health events.
+
 `supper monitor` handles `SIGHUP` by reloading the config directory. Reloading:
 
 - adds new services and starts them when `autostart = true`

@@ -343,6 +343,112 @@ startup_timeout = "200ms"
 }
 
 #[tokio::test]
+async fn start_waits_for_healthcheck_success() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind tcp");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = tokio::spawn(async move {
+        let _ = listener.accept().await;
+    });
+    let dir = temp_dir("startup-health-ok");
+    let path = write_service(
+        &dir,
+        "healthy-start",
+        &format!(
+            r#"
+name = "healthy-start"
+command = "/bin/sh"
+args = ["-c", "sleep 60"]
+autostart = false
+restart = "never"
+startup_timeout = "1s"
+stop_timeout = "100ms"
+
+[healthcheck]
+type = "tcp"
+host = "127.0.0.1"
+port = {port}
+timeout = "100ms"
+interval = "1s"
+retries = 1
+action = "ignore"
+"#
+        ),
+    );
+    let service = config::load_service(&path).expect("service config should load");
+    let supervisor = SupervisorHandle::new(vec![service]);
+
+    let result = supervisor
+        .start("healthy-start")
+        .await
+        .expect("start should wait for healthy");
+
+    assert_eq!(result.status.health, supper::status::HealthStatus::Healthy);
+    assert_eq!(result.status.state, ServiceState::Running);
+    server.await.expect("server task");
+    supervisor.stop("healthy-start").await.expect("stop");
+}
+
+#[tokio::test]
+async fn start_fails_when_healthcheck_does_not_pass() {
+    let unused = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind unused tcp");
+    let port = unused.local_addr().expect("local addr").port();
+    drop(unused);
+    let dir = temp_dir("startup-health-fail");
+    let path = write_service(
+        &dir,
+        "unhealthy-start",
+        &format!(
+            r#"
+name = "unhealthy-start"
+command = "/bin/sh"
+args = ["-c", "sleep 60"]
+autostart = false
+restart = "never"
+startup_timeout = "150ms"
+stop_timeout = "100ms"
+
+[healthcheck]
+type = "tcp"
+host = "127.0.0.1"
+port = {port}
+timeout = "25ms"
+interval = "1s"
+retries = 1
+action = "ignore"
+"#
+        ),
+    );
+    let service = config::load_service(&path).expect("service config should load");
+    let supervisor = SupervisorHandle::new(vec![service]);
+
+    let err = supervisor
+        .start("unhealthy-start")
+        .await
+        .expect_err("start should fail when health never passes");
+
+    assert!(err.to_string().contains("did not become healthy"));
+    let status = supervisor
+        .status(Some("unhealthy-start"))
+        .await
+        .expect("status")
+        .remove(0);
+    assert_eq!(status.state, ServiceState::Running);
+    assert!(matches!(
+        status.health,
+        supper::status::HealthStatus::Unhealthy(_)
+    ));
+    assert!(
+        status
+            .event_history
+            .iter()
+            .any(|event| event.message.contains("startup health check failed"))
+    );
+    supervisor.stop("unhealthy-start").await.expect("stop");
+}
+
+#[tokio::test]
 async fn service_stdio_without_logs_goes_to_dev_null() {
     let dir = temp_dir("stdio-null");
     let marker = dir.join("fds.txt");
