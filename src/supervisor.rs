@@ -40,6 +40,13 @@ pub enum OperationAction {
     Restarted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopOutcome {
+    Terminated,
+    Killed,
+    StillRunning,
+}
+
 #[derive(Clone)]
 pub struct SupervisorHandle {
     inner: Arc<Mutex<BTreeMap<String, ServiceRuntime>>>,
@@ -145,17 +152,36 @@ impl SupervisorHandle {
                 "service already stopped",
             );
         };
-        let escalated = terminate_process_group(pid, timeout, stopped).await;
-        if escalated {
-            let mut services = self.services()?;
-            if let Some(service) = services.get_mut(name) {
-                service.record_event(
-                    ServiceEventKind::StopRequested,
-                    format!("stop escalated to SIGKILL for pid {pid}"),
-                );
+        let outcome = terminate_process_group(pid, timeout, stopped).await;
+        match outcome {
+            StopOutcome::Terminated => {}
+            StopOutcome::Killed => {
+                let mut services = self.services()?;
+                if let Some(service) = services.get_mut(name) {
+                    service.record_event(
+                        ServiceEventKind::StopRequested,
+                        format!(
+                            "stop timed out after {}ms; sent SIGKILL to process group {pid}",
+                            timeout.as_millis()
+                        ),
+                    );
+                }
+            }
+            StopOutcome::StillRunning => {
+                let mut services = self.services()?;
+                if let Some(service) = services.get_mut(name) {
+                    service.record_event(
+                        ServiceEventKind::StopRequested,
+                        format!("stop failed: process group {pid} still exists after SIGKILL"),
+                    );
+                }
+                return Err(OdinError::Protocol(format!(
+                    "service {name} did not stop after SIGTERM, {}ms timeout, and SIGKILL; pid={pid}",
+                    timeout.as_millis()
+                )));
             }
         }
-        self.operation_result(name, OperationAction::Stopped, "service stopped")
+        self.operation_result(name, OperationAction::Stopped, stop_message(outcome))
     }
 
     pub async fn restart(&self, name: &str) -> Result<OperationResult> {
@@ -719,17 +745,34 @@ async fn terminate_process_group(
     pid: u32,
     timeout: Duration,
     stopped: oneshot::Receiver<()>,
-) -> bool {
+) -> StopOutcome {
     let pgid = Pid::from_raw(pid as i32);
+    let stopped = stopped;
+    tokio::pin!(stopped);
     let _ = killpg(pgid, Signal::SIGTERM);
-    if time::timeout(timeout, stopped).await.is_ok() {
-        return false;
+    if time::timeout(timeout, &mut stopped).await.is_ok() {
+        return StopOutcome::Terminated;
     }
     if process_group_exists(pgid) {
         let _ = killpg(pgid, Signal::SIGKILL);
-        return true;
+        let kill_wait = Duration::from_secs(1).min(timeout.max(Duration::from_millis(100)));
+        return if time::timeout(kill_wait, &mut stopped).await.is_ok() {
+            StopOutcome::Killed
+        } else if process_group_exists(pgid) {
+            StopOutcome::StillRunning
+        } else {
+            StopOutcome::Killed
+        };
     }
-    false
+    StopOutcome::Terminated
+}
+
+fn stop_message(outcome: StopOutcome) -> &'static str {
+    match outcome {
+        StopOutcome::Terminated => "service stopped after SIGTERM",
+        StopOutcome::Killed => "service stopped after SIGKILL escalation",
+        StopOutcome::StillRunning => "service did not stop",
+    }
 }
 
 fn process_group_exists(pgid: Pid) -> bool {

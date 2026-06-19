@@ -480,6 +480,38 @@ restart = "never"
 }
 
 #[tokio::test]
+async fn stop_reports_sigkill_escalation() {
+    let dir = temp_dir("stop-escalates");
+    let path = write_service(
+        &dir,
+        "stubborn",
+        r#"
+name = "stubborn"
+command = "/bin/sh"
+args = ["-c", "trap '' TERM; while :; do sleep 1; done"]
+autostart = false
+restart = "never"
+stop_timeout = "50ms"
+"#,
+    );
+    let service = config::load_service(&path).expect("service config should load");
+    let supervisor = SupervisorHandle::new(vec![service]);
+
+    supervisor.start("stubborn").await.expect("start");
+    let result = supervisor.stop("stubborn").await.expect("stop");
+
+    assert_eq!(result.status.state, ServiceState::Stopped);
+    assert!(result.message.contains("SIGKILL"));
+    assert!(
+        result
+            .status
+            .event_history
+            .iter()
+            .any(|event| event.message.contains("sent SIGKILL"))
+    );
+}
+
+#[tokio::test]
 async fn restart_never_does_not_restart_after_exit() {
     let dir = temp_dir("never");
     let path = write_service(
