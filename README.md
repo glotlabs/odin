@@ -122,6 +122,56 @@ parses TOML, checks duplicate names, validates user/group lookups, verifies
 absolute command paths exist, checks `cwd`, and reports log directories that
 will be created by the monitor.
 
+Config errors are reported with the config file, field, source line, caret, and
+a short help message when the location is known:
+
+```text
+error: /usr/local/etc/odin/services/web.toml:3:11 command: command must be an absolute path
+     3 | command = "web"
+       |           ^
+  help: Set command to an absolute path such as "/usr/local/bin/app".
+```
+
+`odin validate` keeps checking after the first problem and reports all config
+diagnostics it can collect. `odin --json validate` returns the same information
+as structured `errors`, `warnings`, and `diagnostics` arrays:
+
+```json
+{
+  "service_count": 1,
+  "errors": [
+    {
+      "severity": "error",
+      "path": "/usr/local/etc/odin/services/web.toml",
+      "line": 3,
+      "column": 11,
+      "service": "web",
+      "field": "command",
+      "message": "command must be an absolute path",
+      "help": "Set command to an absolute path such as \"/usr/local/bin/app\"."
+    }
+  ],
+  "warnings": [],
+  "diagnostics": [
+    {
+      "severity": "error",
+      "path": "/usr/local/etc/odin/services/web.toml",
+      "line": 3,
+      "column": 11,
+      "service": "web",
+      "field": "command",
+      "message": "command must be an absolute path",
+      "help": "Set command to an absolute path such as \"/usr/local/bin/app\"."
+    }
+  ]
+}
+```
+
+Reload uses the same diagnostics. If `odin reload` asks the monitor to reload an
+invalid config directory, the command prints source/caret diagnostics and exits
+non-zero. `odin --json reload` returns a structured control error with
+`code = "invalid-config"` and a `diagnostics` array.
+
 `odin add <name>` creates `<config-dir>/<name>.toml` and refuses to overwrite
 an existing file. Values are derived from the name:
 
@@ -144,6 +194,19 @@ receive output, and missing log paths fall back to `/dev/null`. `odin monitor`
 also detaches its own stdio to `/dev/null` when it starts so it cannot keep a CI
 runner's log-capture pipes open. Short-lived control commands such as
 `odin restart my-app` still use the caller's stdio and then exit.
+
+`odin stop <service>` first sends `SIGTERM` to the service process group and
+waits for `stop_timeout`. If the process group is still present, it sends
+`SIGKILL`, records the escalation in the service event history, and reports:
+
+```text
+my-app: service stopped after SIGKILL escalation (Stopped, pid=-)
+last exit: signal: 9 (SIGKILL)
+```
+
+If the process group still exists after `SIGKILL`, `odin stop` fails and prints
+the current service status plus recent events so the stuck stop can be diagnosed
+without immediately reading service logs.
 
 ## rc.d
 
