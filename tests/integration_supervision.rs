@@ -163,6 +163,20 @@ retries = 0
     assert!(fields.contains(&"healthcheck.retries"));
     assert!(fields.contains(&"healthcheck.host"));
     assert!(fields.contains(&"healthcheck.port"));
+    let command = diagnostics
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.field.as_deref() == Some("command"))
+        .expect("command diagnostic");
+    assert_eq!(command.line, Some(3));
+    assert_eq!(command.column, Some(11));
+    let missing_port = diagnostics
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.field.as_deref() == Some("healthcheck.port"))
+        .expect("missing port diagnostic");
+    assert_eq!(missing_port.line, Some(8));
+    assert_eq!(missing_port.column, Some(1));
     assert!(
         diagnostics
             .diagnostics
@@ -233,6 +247,8 @@ command = "relative-command"
     assert_eq!(payload["service_count"], 1);
     assert_eq!(payload["errors"][0]["severity"], "error");
     assert_eq!(payload["errors"][0]["field"], "command");
+    assert_eq!(payload["errors"][0]["line"], 3);
+    assert_eq!(payload["errors"][0]["column"], 11);
     assert!(
         payload["diagnostics"]
             .as_array()
@@ -240,6 +256,32 @@ command = "relative-command"
             .len()
             >= 1
     );
+}
+
+#[test]
+fn validate_cli_text_reports_source_line_and_caret() {
+    let dir = temp_dir("validate-text");
+    write_service(
+        &dir,
+        "bad",
+        r#"
+name = "bad"
+command = "relative-command"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_odin"))
+        .arg("--config-dir")
+        .arg(&dir)
+        .arg("validate")
+        .output()
+        .expect("run odin validate");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("bad.toml:3:11 command"));
+    assert!(stderr.contains("     3 | command = \"relative-command\""));
+    assert!(stderr.contains("       |           ^"));
 }
 
 #[test]

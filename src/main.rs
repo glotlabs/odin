@@ -170,10 +170,29 @@ fn print_diagnostics(diagnostics: &[ConfigDiagnostic]) {
         }
 
         eprintln!("{severity}: {location}: {}", diagnostic.message);
+        if let Some((line_number, line)) = diagnostic_source_line(diagnostic) {
+            eprintln!("{line_number:>6} | {line}");
+            if let Some(column) = diagnostic.column {
+                let caret_offset = line
+                    .chars()
+                    .take(column.saturating_sub(1))
+                    .map(|ch| if ch == '\t' { '\t' } else { ' ' })
+                    .collect::<String>();
+                eprintln!("       | {caret_offset}^");
+            }
+        }
         if let Some(help) = &diagnostic.help {
             eprintln!("  help: {help}");
         }
     }
+}
+
+fn diagnostic_source_line(diagnostic: &ConfigDiagnostic) -> Option<(usize, String)> {
+    let line_number = diagnostic.line?;
+    let raw = std::fs::read_to_string(&diagnostic.path).ok()?;
+    raw.lines()
+        .nth(line_number.saturating_sub(1))
+        .map(|line| (line_number, line.to_string()))
 }
 
 async fn monitor(config_dir: PathBuf, socket: PathBuf) -> Result<()> {

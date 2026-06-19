@@ -218,6 +218,55 @@ impl std::error::Error for ConfigDiagnostics {}
 struct LoadedService {
     path: PathBuf,
     service: ServiceConfig,
+    source: SourceMap,
+}
+
+#[derive(Debug, Clone)]
+struct SourceMap {
+    fields: HashMap<String, SourceLocation>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SourceLocation {
+    line: usize,
+    column: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct SpannedServiceSource {
+    name: Option<toml::Spanned<toml::Value>>,
+    command: Option<toml::Spanned<toml::Value>>,
+    args: Option<toml::Spanned<toml::Value>>,
+    cwd: Option<toml::Spanned<toml::Value>>,
+    autostart: Option<toml::Spanned<toml::Value>>,
+    env: Option<toml::Spanned<toml::Value>>,
+    user: Option<toml::Spanned<toml::Value>>,
+    group: Option<toml::Spanned<toml::Value>>,
+    umask: Option<toml::Spanned<toml::Value>>,
+    restart: Option<toml::Spanned<toml::Value>>,
+    restart_initial_delay: Option<toml::Spanned<toml::Value>>,
+    restart_max_delay: Option<toml::Spanned<toml::Value>>,
+    stop_timeout: Option<toml::Spanned<toml::Value>>,
+    startup_timeout: Option<toml::Spanned<toml::Value>>,
+    stdout_log: Option<toml::Spanned<toml::Value>>,
+    stderr_log: Option<toml::Spanned<toml::Value>>,
+    healthcheck: Option<toml::Spanned<SpannedHealthCheckSource>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SpannedHealthCheckSource {
+    #[serde(rename = "type")]
+    kind: Option<toml::Spanned<toml::Value>>,
+    command: Option<toml::Spanned<toml::Value>>,
+    args: Option<toml::Spanned<toml::Value>>,
+    host: Option<toml::Spanned<toml::Value>>,
+    port: Option<toml::Spanned<toml::Value>>,
+    url: Option<toml::Spanned<toml::Value>>,
+    interval: Option<toml::Spanned<toml::Value>>,
+    startup_grace: Option<toml::Spanned<toml::Value>>,
+    timeout: Option<toml::Spanned<toml::Value>>,
+    retries: Option<toml::Spanned<toml::Value>>,
+    action: Option<toml::Spanned<toml::Value>>,
 }
 
 pub fn load_services(config_dir: &Path) -> Result<Vec<ServiceConfig>> {
@@ -253,8 +302,12 @@ fn collect_config_dir(
         }
         let (service, mut file_diagnostics) = load_service_with_diagnostics(&path);
         diagnostics.append(&mut file_diagnostics);
-        if let Some(service) = service {
-            loaded.push(LoadedService { path, service });
+        if let Some((service, source)) = service {
+            loaded.push(LoadedService {
+                path,
+                service,
+                source,
+            });
         }
     }
 
@@ -266,6 +319,8 @@ fn collect_config_dir(
             collect_log_diagnostics(loaded_service, &mut diagnostics);
         }
     }
+
+    apply_source_locations(&mut diagnostics, &loaded);
 
     let service_count = loaded.len();
     Ok((
@@ -287,7 +342,9 @@ pub fn load_service(path: &Path) -> Result<ServiceConfig> {
     Ok(service)
 }
 
-fn load_service_with_diagnostics(path: &Path) -> (Option<ServiceConfig>, Vec<ConfigDiagnostic>) {
+fn load_service_with_diagnostics(
+    path: &Path,
+) -> (Option<(ServiceConfig, SourceMap)>, Vec<ConfigDiagnostic>) {
     let raw = match fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(err) => {
@@ -306,6 +363,7 @@ fn load_service_with_diagnostics(path: &Path) -> (Option<ServiceConfig>, Vec<Con
             );
         }
     };
+    let source = SourceMap::parse(&raw);
 
     let service: ServiceConfig = match toml::from_str(&raw) {
         Ok(service) => service,
@@ -332,7 +390,7 @@ fn load_service_with_diagnostics(path: &Path) -> (Option<ServiceConfig>, Vec<Con
 
     let mut diagnostics = Vec::new();
     collect_service_diagnostics(path, &service, &mut diagnostics);
-    (Some(service), diagnostics)
+    (Some((service, source)), diagnostics)
 }
 
 pub fn add_service_file(config_dir: &Path, name: &str) -> Result<AddedService> {
@@ -762,6 +820,178 @@ fn diagnostic_with_location(
         field: field.map(ToString::to_string),
         message: message.into(),
         help: help.map(Into::into),
+    }
+}
+
+fn apply_source_locations(diagnostics: &mut [ConfigDiagnostic], loaded: &[LoadedService]) {
+    for diagnostic in diagnostics {
+        if diagnostic.line.is_some() {
+            continue;
+        }
+        let Some(field) = diagnostic.field.as_deref() else {
+            continue;
+        };
+        let Some(service) = loaded
+            .iter()
+            .find(|service| service.path == diagnostic.path)
+        else {
+            continue;
+        };
+        if let Some(location) = service.source.location_for(field) {
+            diagnostic.line = Some(location.line);
+            diagnostic.column = Some(location.column);
+        }
+    }
+}
+
+impl SourceMap {
+    fn parse(input: &str) -> Self {
+        let mut fields = HashMap::new();
+
+        if let Ok(source) = toml::from_str::<SpannedServiceSource>(input) {
+            record_spanned_field(&mut fields, input, "name", source.name.as_ref());
+            record_spanned_field(&mut fields, input, "command", source.command.as_ref());
+            record_spanned_field(&mut fields, input, "args", source.args.as_ref());
+            record_spanned_field(&mut fields, input, "cwd", source.cwd.as_ref());
+            record_spanned_field(&mut fields, input, "autostart", source.autostart.as_ref());
+            record_spanned_field(&mut fields, input, "env", source.env.as_ref());
+            record_spanned_field(&mut fields, input, "user", source.user.as_ref());
+            record_spanned_field(&mut fields, input, "group", source.group.as_ref());
+            record_spanned_field(&mut fields, input, "umask", source.umask.as_ref());
+            record_spanned_field(&mut fields, input, "restart", source.restart.as_ref());
+            record_spanned_field(
+                &mut fields,
+                input,
+                "restart_initial_delay",
+                source.restart_initial_delay.as_ref(),
+            );
+            record_spanned_field(
+                &mut fields,
+                input,
+                "restart_max_delay",
+                source.restart_max_delay.as_ref(),
+            );
+            record_spanned_field(
+                &mut fields,
+                input,
+                "stop_timeout",
+                source.stop_timeout.as_ref(),
+            );
+            record_spanned_field(
+                &mut fields,
+                input,
+                "startup_timeout",
+                source.startup_timeout.as_ref(),
+            );
+            record_spanned_field(&mut fields, input, "stdout_log", source.stdout_log.as_ref());
+            record_spanned_field(&mut fields, input, "stderr_log", source.stderr_log.as_ref());
+
+            if let Some(healthcheck) = source.healthcheck.as_ref() {
+                record_span(&mut fields, input, "healthcheck", healthcheck.span());
+                let healthcheck = healthcheck.get_ref();
+                record_spanned_field(
+                    &mut fields,
+                    input,
+                    "healthcheck.type",
+                    healthcheck.kind.as_ref(),
+                );
+                record_spanned_field(
+                    &mut fields,
+                    input,
+                    "healthcheck.command",
+                    healthcheck.command.as_ref(),
+                );
+                record_spanned_field(
+                    &mut fields,
+                    input,
+                    "healthcheck.args",
+                    healthcheck.args.as_ref(),
+                );
+                record_spanned_field(
+                    &mut fields,
+                    input,
+                    "healthcheck.host",
+                    healthcheck.host.as_ref(),
+                );
+                record_spanned_field(
+                    &mut fields,
+                    input,
+                    "healthcheck.port",
+                    healthcheck.port.as_ref(),
+                );
+                record_spanned_field(
+                    &mut fields,
+                    input,
+                    "healthcheck.url",
+                    healthcheck.url.as_ref(),
+                );
+                record_spanned_field(
+                    &mut fields,
+                    input,
+                    "healthcheck.interval",
+                    healthcheck.interval.as_ref(),
+                );
+                record_spanned_field(
+                    &mut fields,
+                    input,
+                    "healthcheck.startup_grace",
+                    healthcheck.startup_grace.as_ref(),
+                );
+                record_spanned_field(
+                    &mut fields,
+                    input,
+                    "healthcheck.timeout",
+                    healthcheck.timeout.as_ref(),
+                );
+                record_spanned_field(
+                    &mut fields,
+                    input,
+                    "healthcheck.retries",
+                    healthcheck.retries.as_ref(),
+                );
+                record_spanned_field(
+                    &mut fields,
+                    input,
+                    "healthcheck.action",
+                    healthcheck.action.as_ref(),
+                );
+            }
+        }
+
+        Self { fields }
+    }
+
+    fn location_for(&self, field: &str) -> Option<SourceLocation> {
+        if let Some(location) = self.fields.get(field) {
+            return Some(*location);
+        }
+        field
+            .rsplit_once('.')
+            .and_then(|(section, _)| self.fields.get(section).copied())
+    }
+}
+
+fn record_spanned_field(
+    fields: &mut HashMap<String, SourceLocation>,
+    input: &str,
+    field: &str,
+    value: Option<&toml::Spanned<toml::Value>>,
+) {
+    if let Some(value) = value {
+        record_span(fields, input, field, value.span());
+    }
+}
+
+fn record_span(
+    fields: &mut HashMap<String, SourceLocation>,
+    input: &str,
+    field: &str,
+    span: std::ops::Range<usize>,
+) {
+    if let (Some(line), Some(column)) = line_column(input, span.start) {
+        fields
+            .entry(field.to_string())
+            .or_insert(SourceLocation { line, column });
     }
 }
 
