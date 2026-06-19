@@ -11,6 +11,8 @@ pub enum OdinError {
     },
     #[error("TOML serialize error: {0}")]
     TomlSerialize(#[from] toml::ser::Error),
+    #[error("{0}")]
+    ConfigDiagnostics(#[from] crate::config::ConfigDiagnostics),
     #[error("invalid config in {path}: {message}")]
     InvalidConfig { path: PathBuf, message: String },
     #[error("duplicate service name: {0}")]

@@ -1,8 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use odin::config::{self, HealthAction, HealthCheckConfig, HealthCheckKind, RestartPolicy};
+use odin::OdinError;
+use odin::config::{
+    self, ConfigSeverity, HealthAction, HealthCheckConfig, HealthCheckKind, RestartPolicy,
+};
 use odin::control::{ControlRequest, ControlResponse};
 use odin::service::ServiceRuntime;
 use odin::status::{
@@ -81,6 +85,161 @@ command = "/bin/sh"
 
     let err = config::load_services(&dir).expect_err("duplicate names must fail");
     assert!(err.to_string().contains("duplicate service name"));
+}
+
+#[test]
+fn duplicate_service_name_diagnostic_reports_both_files() {
+    let dir = temp_dir("duplicate-diagnostic");
+    let one = write_service(
+        &dir,
+        "one",
+        r#"
+name = "same"
+command = "/bin/sh"
+"#,
+    );
+    let two = write_service(
+        &dir,
+        "two",
+        r#"
+name = "same"
+command = "/bin/sh"
+"#,
+    );
+
+    let err = config::load_services(&dir).expect_err("duplicate names must fail");
+    let OdinError::ConfigDiagnostics(diagnostics) = err else {
+        panic!("expected config diagnostics");
+    };
+
+    let duplicate = diagnostics
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.field.as_deref() == Some("name"))
+        .expect("duplicate diagnostic");
+    assert_eq!(duplicate.severity, ConfigSeverity::Error);
+    assert!(duplicate.message.contains(&one.display().to_string()));
+    assert!(duplicate.message.contains(&two.display().to_string()));
+    assert_eq!(
+        duplicate.help.as_deref(),
+        Some("Give each service a unique name across the config directory.")
+    );
+}
+
+#[test]
+fn validate_config_dir_collects_multiple_field_diagnostics() {
+    let dir = temp_dir("validate-multiple");
+    write_service(
+        &dir,
+        "bad",
+        r#"
+name = "bad"
+command = "relative-command"
+restart_initial_delay = "10s"
+restart_max_delay = "1s"
+stderr_log = "relative.log"
+
+[healthcheck]
+type = "tcp"
+retries = 0
+"#,
+    );
+
+    let err = config::validate_config_dir(&dir).expect_err("validation must fail");
+    let OdinError::ConfigDiagnostics(diagnostics) = err else {
+        panic!("expected config diagnostics");
+    };
+    let fields: Vec<_> = diagnostics
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == ConfigSeverity::Error)
+        .filter_map(|diagnostic| diagnostic.field.as_deref())
+        .collect();
+
+    assert_eq!(diagnostics.service_count, 1);
+    assert!(fields.contains(&"command"));
+    assert!(fields.contains(&"restart_initial_delay"));
+    assert!(fields.contains(&"stderr_log"));
+    assert!(fields.contains(&"healthcheck.retries"));
+    assert!(fields.contains(&"healthcheck.host"));
+    assert!(fields.contains(&"healthcheck.port"));
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.path.ends_with("bad.toml"))
+    );
+}
+
+#[test]
+fn validate_config_dir_keeps_parse_location_and_other_file_errors() {
+    let dir = temp_dir("validate-parse-location");
+    let invalid = write_service(&dir, "invalid", "name = ");
+    let missing = write_service(
+        &dir,
+        "missing",
+        r#"
+name = "missing"
+command = "/definitely/not/a/odin/test/command"
+"#,
+    );
+
+    let err = config::validate_config_dir(&dir).expect_err("validation must fail");
+    let OdinError::ConfigDiagnostics(diagnostics) = err else {
+        panic!("expected config diagnostics");
+    };
+
+    let parse = diagnostics
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.path == invalid)
+        .expect("parse diagnostic");
+    assert_eq!(parse.line, Some(1));
+    assert!(parse.column.is_some());
+    assert!(parse.message.contains("TOML parse error"));
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.path == missing
+                && diagnostic.field.as_deref() == Some("command"))
+    );
+}
+
+#[test]
+fn validate_cli_json_reports_structured_errors() {
+    let dir = temp_dir("validate-json");
+    write_service(
+        &dir,
+        "bad",
+        r#"
+name = "bad"
+command = "relative-command"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_odin"))
+        .arg("--config-dir")
+        .arg(&dir)
+        .arg("--json")
+        .arg("validate")
+        .output()
+        .expect("run odin validate");
+
+    assert!(!output.status.success());
+    assert!(output.stderr.is_empty());
+    let payload: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("validate JSON output");
+    assert_eq!(payload["service_count"], 1);
+    assert_eq!(payload["errors"][0]["severity"], "error");
+    assert_eq!(payload["errors"][0]["field"], "command");
+    assert!(
+        payload["diagnostics"]
+            .as_array()
+            .expect("diagnostics array")
+            .len()
+            >= 1
+    );
 }
 
 #[test]

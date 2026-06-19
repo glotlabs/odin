@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use odin::config;
+use odin::config::{self, ConfigDiagnostic, ConfigDiagnostics, ConfigSeverity, ValidationReport};
 use odin::control::{self, ControlRequest, ControlResponse};
 use odin::status::ServiceEvent;
 use odin::supervisor::SupervisorHandle;
@@ -39,7 +39,18 @@ enum Command {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(err) = run().await {
+        if let OdinError::ConfigDiagnostics(diagnostics) = &err {
+            print_diagnostics(&diagnostics.diagnostics);
+        } else {
+            eprintln!("error: {err}");
+        }
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<()> {
     tracing_subscriber::fmt().with_target(false).init();
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Monitor) {
@@ -78,7 +89,23 @@ fn add(config_dir: PathBuf, name: &str, json: bool) -> Result<()> {
 }
 
 fn validate(config_dir: PathBuf, json: bool) -> Result<()> {
-    let report = config::validate_config_dir(&config_dir)?;
+    let report = match config::validate_config_dir(&config_dir) {
+        Ok(report) => report,
+        Err(OdinError::ConfigDiagnostics(diagnostics)) => {
+            let report = validation_report_from_diagnostics(diagnostics);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report)
+                        .map_err(|err| OdinError::Protocol(err.to_string()))?
+                );
+            } else {
+                print_diagnostics(&report.diagnostics);
+            }
+            std::process::exit(1);
+        }
+        Err(err) => return Err(err),
+    };
     if json {
         println!(
             "{}",
@@ -92,6 +119,61 @@ fn validate(config_dir: PathBuf, json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn validation_report_from_diagnostics(diagnostics: ConfigDiagnostics) -> ValidationReport {
+    let errors = diagnostics
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == ConfigSeverity::Error)
+        .cloned()
+        .collect();
+    let warnings = diagnostics
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == ConfigSeverity::Warning)
+        .map(|diagnostic| config::ValidationIssue {
+            service: diagnostic
+                .service
+                .clone()
+                .unwrap_or_else(|| "-".to_string()),
+            message: diagnostic.message.clone(),
+        })
+        .collect();
+
+    ValidationReport {
+        service_count: diagnostics.service_count,
+        errors,
+        warnings,
+        diagnostics: diagnostics.diagnostics,
+    }
+}
+
+fn print_diagnostics(diagnostics: &[ConfigDiagnostic]) {
+    for diagnostic in diagnostics {
+        let severity = match diagnostic.severity {
+            ConfigSeverity::Error => "error",
+            ConfigSeverity::Warning => "warning",
+        };
+        let mut location = diagnostic.path.display().to_string();
+        if let Some(line) = diagnostic.line {
+            location.push(':');
+            location.push_str(&line.to_string());
+            if let Some(column) = diagnostic.column {
+                location.push(':');
+                location.push_str(&column.to_string());
+            }
+        }
+        if let Some(field) = &diagnostic.field {
+            location.push(' ');
+            location.push_str(field);
+        }
+
+        eprintln!("{severity}: {location}: {}", diagnostic.message);
+        if let Some(help) = &diagnostic.help {
+            eprintln!("  help: {help}");
+        }
+    }
 }
 
 async fn monitor(config_dir: PathBuf, socket: PathBuf) -> Result<()> {
@@ -132,9 +214,9 @@ async fn monitor(config_dir: PathBuf, socket: PathBuf) -> Result<()> {
                             removed = ?summary.removed,
                             "configuration reloaded"
                         ),
-                        Err(err) => tracing::error!("configuration reload failed: {err}"),
+                        Err(err) => log_config_error("configuration reload failed", &err),
                     },
-                    Err(err) => tracing::error!("configuration reload failed: {err}"),
+                    Err(err) => log_config_error("configuration reload failed", &err),
                 }
             },
         }
@@ -145,6 +227,23 @@ async fn monitor(config_dir: PathBuf, socket: PathBuf) -> Result<()> {
         std::fs::remove_file(socket)?;
     }
     Ok(())
+}
+
+fn log_config_error(context: &str, err: &OdinError) {
+    if let OdinError::ConfigDiagnostics(diagnostics) = err {
+        for diagnostic in &diagnostics.diagnostics {
+            tracing::error!(
+                path = %diagnostic.path.display(),
+                field = diagnostic.field.as_deref(),
+                service = diagnostic.service.as_deref(),
+                help = diagnostic.help.as_deref(),
+                "{context}: {}",
+                diagnostic.message
+            );
+        }
+    } else {
+        tracing::error!("{context}: {err}");
+    }
 }
 
 async fn reload(socket: &std::path::Path, json: bool) -> Result<()> {

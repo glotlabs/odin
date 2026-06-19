@@ -211,6 +211,7 @@ fn error_code(err: &OdinError) -> &'static str {
         OdinError::ServiceNotFound(_) => "service-not-found",
         OdinError::AlreadyRunning(_) => "already-running",
         OdinError::NotRunning(_) => "not-running",
+        OdinError::ConfigDiagnostics(_) => "invalid-config",
         OdinError::InvalidConfig { .. } => "invalid-config",
         OdinError::DuplicateService(_) => "duplicate-service",
         OdinError::Toml { .. } => "toml",
