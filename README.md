@@ -16,7 +16,7 @@ It is intended for long-running third-party apps you own, not for replacing `ini
 Run the foreground supervisor:
 
 ```sh
-odin --config-dir /usr/local/etc/odin/services --socket /var/run/odin.sock monitor
+odin --config-dir /usr/local/etc/odin/services --socket /var/run/odin.sock serve
 ```
 
 Query and control services:
@@ -98,7 +98,7 @@ passes within `startup_timeout`. `healthcheck.startup_grace` is respected before
 the first startup health probe. If the process stays alive but never becomes
 healthy, the command fails with health status and recent health events.
 
-`odin monitor` handles `SIGHUP` by reloading the config directory. Reloading:
+`odin serve` handles `SIGHUP` by reloading the config directory. Reloading:
 
 - adds new services and starts them when `autostart = true`
 - applies live-only changes without restarting the process
@@ -113,7 +113,7 @@ odin reload
 ```
 
 That is the preferred form for deploy scripts and CI jobs because it does not
-require finding the monitor PID or using rc.d-specific commands.
+require finding the supervisor PID or using rc.d-specific commands.
 
 Process-affecting fields are `command`, `args`, `cwd`, `env`, `user`, `group`,
 `umask`, `stdout_log`, and `stderr_log`. Restart policy, restart delays, stop
@@ -122,7 +122,7 @@ timeout, autostart, and health-check changes are live updates.
 `odin validate` checks all service config files without starting anything. It
 parses TOML, checks duplicate names, validates user/group lookups, verifies
 absolute command paths exist, checks `cwd`, and reports log directories that
-will be created by the monitor.
+will be created by the supervisor.
 
 Config errors are reported with the config file, field, source line, caret, and
 a short help message when the location is known:
@@ -169,7 +169,7 @@ as structured `errors`, `warnings`, and `diagnostics` arrays:
 }
 ```
 
-Reload uses the same diagnostics. If `odin reload` asks the monitor to reload an
+Reload uses the same diagnostics. If `odin reload` asks the supervisor to reload an
 invalid config directory, the command prints source/caret diagnostics and exits
 non-zero. `odin --json reload` returns a structured control error with
 `code = "invalid-config"` and a `config_diagnostics` array.
@@ -192,7 +192,7 @@ FreeBSD `newsyslog`; see `examples/newsyslog/odin.conf`.
 
 Managed services never inherit the caller's stdio. For each app process,
 `stdin` is opened from `/dev/null`; configured `stdout_log` and `stderr_log`
-receive output, and missing log paths fall back to `/dev/null`. `odin monitor`
+receive output, and missing log paths fall back to `/dev/null`. `odin serve`
 also detaches its own stdio to `/dev/null` when it starts so it cannot keep a CI
 runner's log-capture pipes open. Short-lived control commands such as
 `odin restart my-app` still use the caller's stdio and then exit.
@@ -288,7 +288,7 @@ Errors use one shape for all control commands:
 
 Optional fields are omitted when absent. `config_diagnostics` is populated for
 reload-time config failures. `operation` and `status` are populated for start,
-stop, and restart failures when the monitor can identify the affected service.
+stop, and restart failures when the supervisor can identify the affected service.
 
 Protocol values in v1:
 

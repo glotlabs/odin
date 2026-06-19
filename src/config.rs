@@ -694,10 +694,10 @@ fn collect_log_diagnostics(loaded: &LoadedService, diagnostics: &mut Vec<ConfigD
                 Some(&service.name),
                 Some(field),
                 format!(
-                    "log directory does not exist yet and will be created by monitor: {}",
+                    "log directory does not exist yet and will be created by the supervisor: {}",
                     parent.display()
                 ),
-                Some("No action is required if the monitor user can create this directory."),
+                Some("No action is required if the supervisor user can create this directory."),
             ));
         }
     }

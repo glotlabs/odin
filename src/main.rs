@@ -27,7 +27,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    Monitor,
+    Serve,
     Add { name: String },
     Validate,
     Reload,
@@ -53,8 +53,8 @@ async fn main() {
 async fn run() -> Result<()> {
     tracing_subscriber::fmt().with_target(false).init();
     let cli = Cli::parse();
-    match cli.command.unwrap_or(Command::Monitor) {
-        Command::Monitor => monitor(cli.config_dir, cli.socket).await,
+    match cli.command.unwrap_or(Command::Serve) {
+        Command::Serve => serve(cli.config_dir, cli.socket).await,
         Command::Add { name } => add(cli.config_dir, &name, cli.json),
         Command::Validate => validate(cli.config_dir, cli.json),
         Command::Reload => reload(&cli.socket, cli.json).await,
@@ -194,7 +194,7 @@ fn diagnostic_source_line(diagnostic: &ConfigDiagnostic) -> Option<(usize, Strin
         .map(|line| (line_number, line.to_string()))
 }
 
-async fn monitor(config_dir: PathBuf, socket: PathBuf) -> Result<()> {
+async fn serve(config_dir: PathBuf, socket: PathBuf) -> Result<()> {
     odin::logging::detach_process_stdio()?;
     let services = config::load_services(&config_dir)?;
     for service in &services {

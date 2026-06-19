@@ -17,7 +17,7 @@ rcvar="odin_enable"
 command="/usr/sbin/daemon"
 pidfile="/var/run/${name}.pid"
 procname="/usr/local/bin/odin"
-command_args="-f -p ${pidfile} ${procname} --config-dir ${odin_config_dir} --socket ${odin_socket} monitor"
+command_args="-f -p ${pidfile} ${procname} --config-dir ${odin_config_dir} --socket ${odin_socket} serve"
 
 load_rc_config "$name"
 run_rc_command "$1"
