@@ -1,2 +1,4 @@
 /target
 TODO.txt
+/packaging/freebsd/dist
+/packaging/freebsd/work

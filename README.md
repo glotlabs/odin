@@ -6,7 +6,7 @@ It is intended for long-running third-party apps you own, not for replacing `ini
 
 ## Layout
 
-- Service configs: `/usr/local/etc/odin/services/*.toml`
+- Service configs: `/opt/odin/etc/odin/services/*.toml`
 - Control socket: `/var/run/odin.sock`
 - Service logs: `/var/log/odin`
 - Future persistent state, if needed: `/var/db/odin`
@@ -16,7 +16,7 @@ It is intended for long-running third-party apps you own, not for replacing `ini
 Run the foreground supervisor:
 
 ```sh
-odin --config-dir /usr/local/etc/odin/services --socket /var/run/odin.sock serve
+odin --config-dir /opt/odin/etc/odin/services --socket /var/run/odin.sock serve
 ```
 
 Query and control services:
@@ -54,9 +54,9 @@ service is removed, its per-service history is no longer queryable. Use
 
 ```toml
 name = "my-app"
-command = "/usr/local/bin/my-app"
+command = "/opt/odin/bin/my-app"
 args = ["--port", "8080"]
-cwd = "/usr/local/my-app"
+cwd = "/opt/odin/my-app"
 autostart = true
 
 env = { RUST_LOG = "info" }
@@ -129,10 +129,10 @@ Config errors are reported with the config file, field, source line, caret, and
 a short help message when the location is known:
 
 ```text
-error: /usr/local/etc/odin/services/web.toml:3:11 command: command must be an absolute path
+error: /opt/odin/etc/odin/services/web.toml:3:11 command: command must be an absolute path
      3 | command = "web"
        |           ^
-  help: Set command to an absolute path such as "/usr/local/bin/app".
+  help: Set command to an absolute path such as "/opt/odin/bin/app".
 ```
 
 `odin validate` keeps checking after the first problem and reports all config
@@ -145,26 +145,26 @@ as structured `errors`, `warnings`, and `diagnostics` arrays:
   "errors": [
     {
       "severity": "error",
-      "path": "/usr/local/etc/odin/services/web.toml",
+      "path": "/opt/odin/etc/odin/services/web.toml",
       "line": 3,
       "column": 11,
       "service": "web",
       "field": "command",
       "message": "command must be an absolute path",
-      "help": "Set command to an absolute path such as \"/usr/local/bin/app\"."
+      "help": "Set command to an absolute path such as \"/opt/odin/bin/app\"."
     }
   ],
   "warnings": [],
   "diagnostics": [
     {
       "severity": "error",
-      "path": "/usr/local/etc/odin/services/web.toml",
+      "path": "/opt/odin/etc/odin/services/web.toml",
       "line": 3,
       "column": 11,
       "service": "web",
       "field": "command",
       "message": "command must be an absolute path",
-      "help": "Set command to an absolute path such as \"/usr/local/bin/app\"."
+      "help": "Set command to an absolute path such as \"/opt/odin/bin/app\"."
     }
   ]
 }
@@ -178,8 +178,8 @@ non-zero. `odin --json reload` returns a structured control error with
 `odin add <name>` creates `<config-dir>/<name>.toml` and refuses to overwrite
 an existing file. Values are derived from the name:
 
-- `command = "/usr/local/bin/<name>"`
-- `cwd = "/usr/local/<name>"`
+- `command = "/opt/odin/bin/<name>"`
+- `cwd = "/opt/odin/<name>"`
 - `stdout_log = "/var/log/odin/<name>.out.log"`
 - `stderr_log = "/var/log/odin/<name>.err.log"`
 - `autostart = true`
@@ -189,7 +189,7 @@ The generated file omits `user` and `group`; add them manually when the service
 should drop privileges to a dedicated account.
 
 Logs are appended directly to files. Log rotation is intentionally left to
-FreeBSD `newsyslog`; see `examples/newsyslog/odin.conf`.
+FreeBSD `newsyslog`; see `packaging/freebsd/files/newsyslog/odin.conf`.
 
 Managed services never inherit the caller's stdio. For each app process,
 `stdin` is opened from `/dev/null`; configured `stdout_log` and `stderr_log`
@@ -308,21 +308,25 @@ Protocol values in v1:
   `restart-scheduled`, `restarted`, `health-changed`, `reload-updated`,
   `reload-restart-required`, `removed`, `added`
 
-## rc.d
+## FreeBSD Package
 
-An example script is provided at `examples/rc.d/odin`. The supervisor itself
-runs in the foreground; the example uses FreeBSD `daemon(8)` to background it
-and maintain a pidfile.
+FreeBSD package helper files are in `packaging/freebsd`. The package installs
+odin under `/opt/odin`, includes an rc.d script, and installs a newsyslog
+configuration.
 
-Install sketch:
+Build a package on FreeBSD:
 
 ```sh
-install -m 0755 target/release/odin /usr/local/bin/odin
-install -d -m 0755 /usr/local/etc/odin/services
-install -d -m 0755 /var/log/odin
-install -m 0755 examples/rc.d/odin /usr/local/etc/rc.d/odin
+./packaging/freebsd/build.sh
+pkg install packaging/freebsd/dist/odin-*.pkg
 sysrc odin_enable=YES
 service odin start
+```
+
+To inspect the fake root without running `pkg create`:
+
+```sh
+./packaging/freebsd/build.sh --stage-only
 ```
 
 ## Testing

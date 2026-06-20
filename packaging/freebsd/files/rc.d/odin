@@ -10,13 +10,12 @@ name="odin"
 rcvar="odin_enable"
 
 : ${odin_enable:="NO"}
-: ${odin_config_dir:="/usr/local/etc/odin/services"}
+: ${odin_config_dir:="/opt/odin/etc/odin/services"}
 : ${odin_socket:="/var/run/odin.sock"}
-: ${odin_user:="root"}
 
 command="/usr/sbin/daemon"
 pidfile="/var/run/${name}.pid"
-procname="/usr/local/bin/odin"
+procname="/opt/odin/bin/odin"
 command_args="-f -p ${pidfile} ${procname} --config-dir ${odin_config_dir} --socket ${odin_socket} serve"
 
 load_rc_config "$name"

@@ -417,9 +417,9 @@ pub fn add_service_file(config_dir: &Path, name: &str) -> Result<AddedService> {
 pub fn derive_service_config(name: &str) -> ServiceConfig {
     ServiceConfig {
         name: name.to_string(),
-        command: PathBuf::from(format!("/usr/local/bin/{name}")),
+        command: PathBuf::from(format!("/opt/odin/bin/{name}")),
         args: Vec::new(),
-        cwd: Some(PathBuf::from(format!("/usr/local/{name}"))),
+        cwd: Some(PathBuf::from(format!("/opt/odin/{name}"))),
         autostart: true,
         env: Default::default(),
         user: None,
@@ -464,7 +464,7 @@ fn collect_service_diagnostics(
             Some(&service.name),
             Some("command"),
             "command must not be empty",
-            Some("Set command to an absolute executable path, for example \"/usr/local/bin/app\"."),
+            Some("Set command to an absolute executable path, for example \"/opt/odin/bin/app\"."),
         ));
     }
     if let Some(mask) = service.umask
@@ -583,7 +583,7 @@ fn collect_runtime_diagnostics(loaded: &LoadedService, diagnostics: &mut Vec<Con
             Some(&service.name),
             Some("command"),
             "command must be an absolute path",
-            Some("Set command to an absolute path such as \"/usr/local/bin/app\"."),
+            Some("Set command to an absolute path such as \"/opt/odin/bin/app\"."),
         ));
     } else if !service.command.exists() {
         diagnostics.push(diagnostic(

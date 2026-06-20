@@ -9,7 +9,7 @@ use odin::supervisor::SupervisorHandle;
 use odin::{OdinError, Result};
 use tokio::signal::unix::{SignalKind, signal};
 
-const DEFAULT_CONFIG_DIR: &str = "/usr/local/etc/odin/services";
+const DEFAULT_CONFIG_DIR: &str = "/opt/odin/etc/odin/services";
 const DEFAULT_SOCKET: &str = "/var/run/odin.sock";
 
 #[derive(Debug, Parser)]

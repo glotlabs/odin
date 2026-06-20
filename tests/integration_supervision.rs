@@ -201,14 +201,14 @@ fn control_config_error_schema_uses_config_diagnostics() {
                 message: "configuration has 1 error".to_string(),
                 config_diagnostics: Some(vec![config::ConfigDiagnostic {
                     severity: ConfigSeverity::Error,
-                    path: PathBuf::from("/usr/local/etc/odin/services/web.toml"),
+                    path: PathBuf::from("/opt/odin/etc/odin/services/web.toml"),
                     line: Some(3),
                     column: Some(11),
                     service: Some("web".to_string()),
                     field: Some("command".to_string()),
                     message: "command must be an absolute path".to_string(),
                     help: Some(
-                        "Set command to an absolute path such as \"/usr/local/bin/app\"."
+                        "Set command to an absolute path such as \"/opt/odin/bin/app\"."
                             .to_string(),
                     ),
                 }]),
@@ -230,13 +230,13 @@ fn control_config_error_schema_uses_config_diagnostics() {
                 "config_diagnostics": [
                     {
                         "severity": "error",
-                        "path": "/usr/local/etc/odin/services/web.toml",
+                        "path": "/opt/odin/etc/odin/services/web.toml",
                         "line": 3,
                         "column": 11,
                         "service": "web",
                         "field": "command",
                         "message": "command must be an absolute path",
-                        "help": "Set command to an absolute path such as \"/usr/local/bin/app\"."
+                        "help": "Set command to an absolute path such as \"/opt/odin/bin/app\"."
                     }
                 ]
             }
@@ -501,11 +501,8 @@ fn add_service_file_derives_config_from_name() {
 
     assert_eq!(added.path, dir.join("my-app.toml"));
     assert_eq!(added.service.name, "my-app");
-    assert_eq!(
-        added.service.command,
-        PathBuf::from("/usr/local/bin/my-app")
-    );
-    assert_eq!(added.service.cwd, Some(PathBuf::from("/usr/local/my-app")));
+    assert_eq!(added.service.command, PathBuf::from("/opt/odin/bin/my-app"));
+    assert_eq!(added.service.cwd, Some(PathBuf::from("/opt/odin/my-app")));
     assert_eq!(
         added.service.stdout_log,
         Some(PathBuf::from("/var/log/odin/my-app.out.log"))

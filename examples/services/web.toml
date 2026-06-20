@@ -1,7 +1,7 @@
 name = "web"
-command = "/usr/local/bin/my-web-app"
+command = "/opt/odin/bin/my-web-app"
 args = ["--host", "127.0.0.1", "--port", "8080"]
-cwd = "/usr/local/my-web-app"
+cwd = "/opt/odin/my-web-app"
 autostart = true
 
 env = { RUST_LOG = "info" }

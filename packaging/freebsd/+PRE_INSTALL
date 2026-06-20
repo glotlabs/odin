@@ -1,0 +1,16 @@
+#!/bin/sh
+
+set -eu
+
+rootdir="${PKG_ROOTDIR:-}"
+
+install -d -m 0755 "${rootdir}/opt/odin"
+install -d -m 0755 "${rootdir}/opt/odin/bin"
+install -d -m 0755 "${rootdir}/opt/odin/etc"
+install -d -m 0755 "${rootdir}/opt/odin/etc/odin"
+install -d -m 0755 "${rootdir}/opt/odin/etc/odin/services"
+install -d -m 0755 "${rootdir}/opt/odin/share"
+install -d -m 0755 "${rootdir}/opt/odin/share/examples"
+install -d -m 0755 "${rootdir}/opt/odin/share/examples/odin"
+install -d -m 0755 "${rootdir}/var/db/odin"
+install -d -m 0755 "${rootdir}/var/log/odin"

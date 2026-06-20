@@ -1,0 +1,27 @@
+odin has been installed under:
+
+    /opt/odin
+
+The packaged rc.d script is installed as:
+
+    /usr/local/etc/rc.d/odin
+
+Create service configs in:
+
+    /opt/odin/etc/odin/services
+
+A sample service config is available at:
+
+    /opt/odin/etc/odin/services/hello.toml.sample
+
+To enable the supervisor at boot:
+
+    sysrc odin_enable=YES
+    service odin start
+
+The rc.d script runs:
+
+    /opt/odin/bin/odin --config-dir /opt/odin/etc/odin/services --socket /var/run/odin.sock serve
+
+Application logs are expected in /var/log/odin and can be rotated by the
+packaged newsyslog configuration.

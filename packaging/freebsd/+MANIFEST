@@ -1,0 +1,18 @@
+name: "odin"
+origin: "sysutils/odin"
+version: "0.1.0"
+comment: "Minimal service supervisor for FreeBSD-hosted application processes"
+maintainer: "petter@hask.no"
+www: "https://github.com/glotlabs/odin"
+abi: "FreeBSD:*:*"
+arch: "freebsd:*"
+prefix: "/"
+flatsize: 0
+desc: <<EOD
+odin is a minimal Rust service supervisor for FreeBSD-hosted application
+processes. It is intended for long-running third-party applications you own,
+not for replacing init, rc.d, or system service management.
+
+This package installs odin under /opt/odin and provides optional FreeBSD
+integration files for rc.d and newsyslog.
+EOD

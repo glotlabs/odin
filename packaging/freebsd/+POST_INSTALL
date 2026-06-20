@@ -1,0 +1,18 @@
+#!/bin/sh
+
+set -eu
+
+rootdir="${PKG_ROOTDIR:-}"
+sample="${rootdir}/opt/odin/etc/odin/services/hello.toml.sample"
+
+install -d -m 0755 "${rootdir}/opt/odin/etc/odin/services"
+install -d -m 0755 "${rootdir}/var/db/odin"
+install -d -m 0755 "${rootdir}/var/log/odin"
+
+if [ -f "${sample}" ]; then
+	chmod 0644 "${sample}"
+fi
+
+if [ -f "${rootdir}/usr/local/etc/rc.d/odin" ]; then
+	chmod 0555 "${rootdir}/usr/local/etc/rc.d/odin"
+fi
