@@ -50,12 +50,14 @@ install -d -m 0755 "${stage_dir}/opt/odin/bin"
 install -d -m 0755 "${stage_dir}/opt/odin/etc/odin/services"
 install -d -m 0755 "${stage_dir}/opt/odin/share/doc/odin"
 install -d -m 0755 "${stage_dir}/opt/odin/share/examples/odin/services"
+install -d -m 0755 "${stage_dir}/usr/local/bin"
 install -d -m 0755 "${stage_dir}/usr/local/etc/rc.d"
 install -d -m 0755 "${stage_dir}/usr/local/etc/newsyslog.conf.d"
 install -d -m 0755 "${stage_dir}/var/db/odin"
 install -d -m 0755 "${stage_dir}/var/log/odin"
 
 install -m 0555 "${repo_root}/target/release/odin" "${stage_dir}/opt/odin/bin/odin"
+ln -s /opt/odin/bin/odin "${stage_dir}/usr/local/bin/odin"
 install -m 0644 "${repo_root}/README.md" "${stage_dir}/opt/odin/share/doc/odin/README.md"
 install -m 0644 "${repo_root}/examples/services/hello.toml" "${stage_dir}/opt/odin/etc/odin/services/hello.toml.sample"
 install -m 0644 "${repo_root}/examples/services/hello.toml" "${stage_dir}/opt/odin/share/examples/odin/services/hello.toml"
@@ -74,7 +76,7 @@ sed \
 	"${script_dir}/+MANIFEST" > "${meta_dir}/+MANIFEST"
 
 {
-	find "${stage_dir}" -type f -print | sed "s#^${stage_dir}##" | sort
+	find "${stage_dir}" \( -type f -o -type l \) -print | sed "s#^${stage_dir}##" | sort
 	printf '@dir /opt/odin/etc/odin/services\n'
 	printf '@dir /var/db/odin\n'
 	printf '@dir /var/log/odin\n'

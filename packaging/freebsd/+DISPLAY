@@ -2,6 +2,10 @@ odin has been installed under:
 
     /opt/odin
 
+A command symlink is available in the standard local PATH:
+
+    /usr/local/bin/odin -> /opt/odin/bin/odin
+
 The packaged rc.d script is installed as:
 
     /usr/local/etc/rc.d/odin
