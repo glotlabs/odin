@@ -323,6 +323,11 @@ sysrc odin_enable=YES
 service odin start
 ```
 
+Package builds use the current commit timestamp as a SemVer-compatible version,
+formatted as `0.YYYYMMDD.0-tHHMMSS`. When git history is unavailable, set
+`ODIN_VERSION_TIMESTAMP` in the build environment with an ISO 8601 value such
+as `2026-06-21T01:02:10Z`.
+
 To inspect the fake root without running `pkg create`:
 
 ```sh

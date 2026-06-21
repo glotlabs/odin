@@ -23,14 +23,6 @@ case "${1:-}" in
 		;;
 esac
 
-version=$(awk -F '"' '/^version = / { print $2; exit }' "${repo_root}/Cargo.toml")
-package_name="odin-${version}"
-
-if [ -z "${version}" ]; then
-	echo "could not determine package version from Cargo.toml" >&2
-	exit 1
-fi
-
 if ! command -v cargo >/dev/null 2>&1; then
 	echo "cargo is required" >&2
 	exit 1
@@ -45,6 +37,17 @@ rm -rf "${work_dir}" "${out_dir}"
 mkdir -p "${stage_dir}" "${meta_dir}" "${out_dir}"
 
 (cd "${repo_root}" && cargo build --release --locked)
+
+version=$("${repo_root}/target/release/odin" --version | awk '{ print $2 }')
+case "${version}" in
+	0.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].0-t[0-9][0-9][0-9][0-9][0-9][0-9])
+		;;
+	*)
+		echo "could not determine package version from odin --version" >&2
+		exit 1
+		;;
+esac
+package_name="odin-${version}"
 
 install -d -m 0755 "${stage_dir}/opt/odin/bin"
 install -d -m 0755 "${stage_dir}/opt/odin/etc/odin/services"

@@ -1,6 +1,6 @@
 name: "odin"
 origin: "sysutils/odin"
-version: "0.1.0"
+version: "0.0.0-t000000"
 comment: "Minimal service supervisor for FreeBSD-hosted application processes"
 maintainer: "petter@hask.no"
 www: "https://github.com/glotlabs/odin"

@@ -11,9 +11,14 @@ use tokio::signal::unix::{SignalKind, signal};
 
 const DEFAULT_CONFIG_DIR: &str = "/opt/odin/etc/odin/services";
 const DEFAULT_SOCKET: &str = "/var/run/odin.sock";
+const ODIN_VERSION: &str = env!("ODIN_VERSION");
 
 #[derive(Debug, Parser)]
-#[command(name = "odin", version, about = "Minimal FreeBSD service supervisor")]
+#[command(
+    name = "odin",
+    version = ODIN_VERSION,
+    about = "Minimal FreeBSD service supervisor"
+)]
 struct Cli {
     #[arg(long, default_value = DEFAULT_CONFIG_DIR, global = true)]
     config_dir: PathBuf,
